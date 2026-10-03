@@ -197,8 +197,83 @@ describe('keeping an export', () => {
     expect(notify).toHaveBeenCalledWith('保存到项目失败，改为下载：太大了', 'error');
   });
 
+  it('puts the kept cut on the storyboard, and says when there is no board to put it on', async () => {
+    const landed: Array<{ path: string; title?: string; durationSeconds?: number }> = [];
+    const notify = vi.fn();
+    const { api } = fakeApi({ landOnBoard: async (body) => { landed.push(body); return { landedNodeId: 'video-1' }; } });
+    await session(api).keepExport([{ blob: new Blob(['v'], { type: 'video/mp4' }), name: '雨夜.mp4', kind: 'video', durationSeconds: 20 }], notify);
+    expect(landed).toEqual([{ path: 'canvas/renders/雨夜.mp4', title: '雨夜', durationSeconds: 20 }]);
+    expect(notify).toHaveBeenLastCalledWith('已存到 film/canvas/renders/雨夜.mp4，并放上了分镜画布', 'success');
+
+    const offBoard = fakeApi({ landOnBoard: async () => ({ landedNodeId: null }) });
+    await session(offBoard.api).keepExport([{ blob: new Blob(['v']), name: 'cut.mp4', kind: 'video' }], notify);
+    expect(notify).toHaveBeenLastCalledWith('已存到 film/canvas/renders/cut.mp4；分镜画布还没有内容，所以没放上去', 'success');
+
+    // Landing is extra: a board that cannot be written does not undo the kept file.
+    const broken = fakeApi({ landOnBoard: async () => { throw new Error('画布坏了'); } });
+    expect(await session(broken.api).keepExport([{ blob: new Blob(['v']), name: 'cut.mp4', kind: 'video' }], notify)).toBe(true);
+    expect(notify).toHaveBeenLastCalledWith('已保存到 film/canvas/renders/cut.mp4', 'success');
+  });
+
   it('splits a download name into a safe stem and an extension', () => {
     expect(splitExportName('a/b:c.MP4')).toEqual({ base: 'a-b-c', extension: 'mp4' });
     expect(splitExportName('noext')).toEqual({ base: 'noext', extension: 'bin' });
+  });
+});
+
+describe('the storyboard as material', () => {
+  it('saves first, places on the revision it saved, and shows the placed cut', async () => {
+    const placements: unknown[] = [];
+    const { api, saves, setStored } = fakeApi({
+      placeBoardMedia: async (body) => {
+        placements.push(body);
+        setStored(state(9, archive('放好了')));
+        return { clipId: 'c', track: 'music', path: 'canvas/media/a.wav', name: '配乐', start: 3.5, durationSeconds: 10 };
+      },
+    });
+    const open = session(api);
+    const { editor, documents } = fakeEditor();
+    await open.load();
+    open.attach({ ...editor, playheadSeconds: () => 3.5 });
+    open.handleEvent({ type: 'dirty', baseRevision: 0 });
+    open.handleEvent({ type: 'save-request', baseRevision: 0, upstreamDocument: archive('一') });
+    const notify = vi.fn();
+    await open.placeBoardMedia('node-1', 'music', notify);
+    expect(saves).toHaveLength(1);
+    expect(placements).toEqual([{ source: { nodeId: 'node-1' }, baseRevision: 1, operationId: expect.stringMatching(/^console-place-/), track: 'music', at: 3.5 }]);
+    expect(open.revision).toBe(9);
+    expect(documents.at(-1)?.upstreamDocument).toEqual(archive('放好了'));
+    expect(notify).toHaveBeenCalledWith('已把 配乐 放在 3.5 秒处', 'success');
+  });
+
+  it('adopts the current cut when the placement was overtaken', async () => {
+    const { api } = fakeApi({ placeBoardMedia: async () => { throw new TimelineConflictError(state(5, archive('别处的'))); } });
+    const open = session(api);
+    const { editor, documents } = fakeEditor();
+    await open.load();
+    open.attach(editor);
+    const notify = vi.fn();
+    await expect(open.placeBoardMedia('node-1', 'default', notify)).rejects.toBeInstanceOf(TimelineConflictError);
+    expect(open.revision).toBe(5);
+    expect(documents.at(-1)?.upstreamDocument).toEqual(archive('别处的'));
+    expect(notify).toHaveBeenCalledWith(expect.stringMatching(/^没有放进去：/), 'error');
+  });
+});
+
+describe('takes', () => {
+  it('swaps by board node or, for a take that left the board, by path', async () => {
+    const swaps: unknown[] = [];
+    const { api } = fakeApi({ swapVersion: async (body) => { swaps.push(body); return { name: '第一条' }; } });
+    const open = session(api);
+    await open.load();
+    open.attach(fakeEditor().editor);
+    const notify = vi.fn();
+    await open.useVersion('shot-1', 'node-7', notify);
+    await open.useVersion('shot-1', 'canvas/media/old-take.mp4', notify);
+    expect(swaps).toEqual([
+      { clipId: 'shot-1', source: { nodeId: 'node-7' }, baseRevision: 0, operationId: expect.stringMatching(/^console-version-/) },
+      { clipId: 'shot-1', source: { path: 'canvas/media/old-take.mp4' }, baseRevision: 0, operationId: expect.stringMatching(/^console-version-/) },
+    ]);
+    expect(notify).toHaveBeenLastCalledWith('第一条 已换成你选的那条', 'success');
   });
 });

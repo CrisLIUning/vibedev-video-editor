@@ -23,7 +23,7 @@ import type {
 import { HOST_PROJECT_ASPECTS } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { createEmptyTimelineArchive } from '../../packages/video-editor-bridge/src/empty-archive.ts';
 import { TimelineConflictError } from './api.ts';
-import type { TimelineState, UploadedFile } from './api.ts';
+import type { PlacedClip, TimelineState, UploadedFile } from './api.ts';
 
 /** What the session needs from the plugin. */
 export interface SessionApi {
@@ -33,6 +33,10 @@ export interface SessionApi {
   redoTimeline(baseRevision: number): Promise<TimelineState>;
   getMaterial(): Promise<{ assets: VideoEditorAuthorizedAsset[]; projectFiles: VideoEditorProjectFile[] }>;
   uploadFile(path: string, blob: Blob, options: { unique?: boolean }): Promise<UploadedFile>;
+  /** Put a film file on the storyboard; absent, exports stay off the board. */
+  landOnBoard?(body: { path: string; title?: string; durationSeconds?: number }): Promise<{ landedNodeId: string | null }>;
+  placeBoardMedia?(body: { source: { nodeId: string }; baseRevision: number; operationId: string; track?: 'music'; at?: number }): Promise<PlacedClip>;
+  swapVersion?(body: { clipId: string; source: { nodeId: string } | { path: string }; baseRevision: number; operationId: string }): Promise<{ name: string }>;
 }
 
 export type NoticeTone = 'info' | 'success' | 'error';
@@ -299,12 +303,77 @@ export class TimelineSession {
         if (file === video) continue;
         await this.options.api.uploadFile(`${RENDER_DIR}/${stem}.${splitExportName(file.name).extension}`, file.blob, {});
       }
-      notify(`已保存到 film/${kept.name}`, 'success');
+      // Beside the material it was made from: on the storyboard, when there is one.
+      const landing = this.options.api.landOnBoard
+        ? await this.options.api.landOnBoard({
+          path: kept.name,
+          title: stem,
+          ...(video.durationSeconds !== undefined ? { durationSeconds: video.durationSeconds } : {}),
+        }).catch(() => undefined)
+        : undefined;
+      notify(
+        landing?.landedNodeId
+          ? `已存到 film/${kept.name}，并放上了分镜画布`
+          : landing
+            ? `已存到 film/${kept.name}；分镜画布还没有内容，所以没放上去`
+            : `已保存到 film/${kept.name}`,
+        'success',
+      );
       void this.refreshMaterial();
       return true;
     } catch (error) {
       notify(`保存到项目失败，改为下载：${message(error)}`, 'error');
       return false;
+    }
+  }
+
+  /**
+   * Put one of the storyboard's media nodes on the cut: video and images after
+   * the visual clips, audio on the music track at the playhead.
+   */
+  async placeBoardMedia(nodeId: string, track: 'default' | 'music', notify: (text: string, tone: NoticeTone) => void): Promise<void> {
+    const place = this.options.api.placeBoardMedia;
+    if (!place) return;
+    try {
+      await this.drainSaves();
+      const at = this.editor?.playheadSeconds?.() ?? 0;
+      const placed = await place({
+        source: { nodeId },
+        baseRevision: this.revision,
+        operationId: `console-place-${Date.now().toString(36)}`,
+        ...(track === 'music' ? { track: 'music' as const, ...(at > 0 ? { at } : {}) } : {}),
+      });
+      this.applyState(await this.options.api.getTimeline());
+      notify(`已把 ${placed.name} 放在 ${placed.start.toFixed(1)} 秒处`, 'success');
+    } catch (error) {
+      if (error instanceof TimelineConflictError) this.applyState(error.current);
+      notify(`没有放进去：${message(error)}`, 'error');
+      throw error;
+    }
+  }
+
+  /**
+   * Give the selected clip another take from the storyboard: same place, same
+   * length. The menu hands back a board node id, or a path for a take that has
+   * left the board; a path always has a separator, an id never does.
+   */
+  async useVersion(clipId: string, versionId: string, notify: (text: string, tone: NoticeTone) => void): Promise<void> {
+    const swap = this.options.api.swapVersion;
+    if (!swap) return;
+    try {
+      await this.drainSaves();
+      const swapped = await swap({
+        clipId,
+        source: versionId.includes('/') ? { path: versionId } : { nodeId: versionId },
+        baseRevision: this.revision,
+        operationId: `console-version-${Date.now().toString(36)}`,
+      });
+      this.applyState(await this.options.api.getTimeline());
+      notify(`${swapped.name} 已换成你选的那条`, 'success');
+    } catch (error) {
+      if (error instanceof TimelineConflictError) this.applyState(error.current);
+      notify(`没有换成：${message(error)}`, 'error');
+      throw error;
     }
   }
 

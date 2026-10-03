@@ -157,6 +157,66 @@ export const uploadFile = async (path: string, blob: Blob, options: { unique?: b
     { method: 'PUT', body: blob },
   )).file;
 
+/** One media node on the storyboard that plays a film file. */
+export interface BoardMedia {
+  nodeId: string;
+  title: string;
+  path: string;
+  kind: 'video' | 'image' | 'audio';
+  durationSeconds?: number;
+}
+
+/** The storyboard's media nodes in board order; none when there is no board yet. */
+export async function listBoardMedia(): Promise<BoardMedia[]> {
+  try {
+    return (await studio<{ media: BoardMedia[] }>(`/api/canvas/timelines/${board}/media${projectQuery}`, '读取画布素材')).media;
+  } catch (error) {
+    if (error instanceof HostRequestError && error.status === 404) return [];
+    throw error;
+  }
+}
+
+export interface PlacedClip {
+  clipId: string;
+  track: string;
+  path: string;
+  name: string;
+  start: number;
+  durationSeconds: number;
+}
+
+/** Put a storyboard node on the cut, built on `baseRevision`. */
+export const placeBoardMedia = async (body: { source: { nodeId: string }; baseRevision: number; operationId: string; track?: 'music'; at?: number }): Promise<PlacedClip> =>
+  (await studio<{ placed: PlacedClip }>(`/api/canvas/timelines/${board}/place${projectQuery}`, '放到时间线', { method: 'POST', json: body })).placed;
+
+/** Put a film file on the storyboard; `landedNodeId` is null when there is no board to put it on. */
+export const landOnBoard = async (body: { path: string; title?: string; durationSeconds?: number }): Promise<{ landedNodeId: string | null }> =>
+  (await studio<{ landed: { landedNodeId: string | null } }>(`/api/canvas/timelines/${board}/media${projectQuery}`, '放到画布', { method: 'POST', json: body })).landed;
+
+export interface Slot {
+  clipId: string;
+  name: string;
+  durationSeconds: number;
+}
+
+export interface Take {
+  path: string;
+  name: string;
+  kind: 'video' | 'image' | 'audio';
+  nodeId?: string;
+  durationSeconds?: number;
+  current: boolean;
+  refusal?: string;
+}
+
+/** The takes on the storyboard that could fill a clip of the cut. */
+export const listVersions = (clipId: string): Promise<{ slot?: Slot; versions: Take[] }> =>
+  studio(`/api/canvas/timelines/${board}/versions${projectQuery}&clipId=${encodeURIComponent(clipId)}`, '读取候选版本');
+
+/** Give a clip another take, built on `baseRevision`. */
+export const swapVersion = async (body: { clipId: string; source: { nodeId: string } | { path: string }; baseRevision: number; operationId: string }): Promise<{ name: string }> =>
+  (await studio<{ swapped: { name: string } }>(`/api/canvas/timelines/${board}/version${projectQuery}`, '换版本', { method: 'POST', json: body })).swapped;
+
 /** Studio's URL for a film file; cuts and the authorization list keep these. */
 export function projectRawUrl(path: string): string {
   return `/api/projects/${board}/raw/${encodePath(path)}`;
