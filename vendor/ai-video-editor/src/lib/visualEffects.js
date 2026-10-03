@@ -1,0 +1,311 @@
+import { MAX_TIMELINE_DURATION_SECONDS, MIN_VISUAL_SEGMENT_SECONDS } from "../config/editor.js";
+import { COLOR_GRADE_KEYFRAME_KEYS, normalizeColorGradeProperty } from "./colorGrade.js";
+
+const DEFAULT_TRANSFORM = Object.freeze({ x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 });
+export const VISUAL_TRANSFORM_KEYS = Object.freeze(["scale", "x", "y", "rotation", "opacity"]);
+export const VISUAL_PROPERTY_KEYS = Object.freeze([...VISUAL_TRANSFORM_KEYS, ...COLOR_GRADE_KEYFRAME_KEYS]);
+const KEYFRAME_TIME_TOLERANCE = 0.04;
+import { normalizeVisualPlaybackRate, getVisualSourceTime, requiresTimelineDrivenVideoFrames } from "./clipTimeMapping.js";
+export { MIN_VISUAL_PLAYBACK_RATE, MAX_VISUAL_PLAYBACK_RATE, normalizeVisualPlaybackRate, getVisualSourceTime, getVisualPlaybackRateAtTime, requiresTimelineDrivenVideoFrames, shouldUseNativeVisualPlayback } from "./clipTimeMapping.js";
+
+export function updateVisualSegmentPlaybackRate(segment, value) {
+  const previousRate = normalizeVisualPlaybackRate(segment?.playbackRate);
+  const playbackRate = normalizeVisualPlaybackRate(value);
+  const previousDuration = Math.max(MIN_VISUAL_SEGMENT_SECONDS, Number(segment?.duration) || MIN_VISUAL_SEGMENT_SECONDS);
+  const sourceDuration = Math.max(
+    MIN_VISUAL_SEGMENT_SECONDS,
+    Number(segment?.sourceDuration) || previousDuration * previousRate,
+  );
+  const duration = Math.max(MIN_VISUAL_SEGMENT_SECONDS, Math.min(MAX_TIMELINE_DURATION_SECONDS, sourceDuration / playbackRate));
+  const timeScale = duration / previousDuration;
+  return {
+    ...segment,
+    playbackRate,
+    speedCurve: segment?.speedCurve ? { ...segment.speedCurve, enabled: false } : segment?.speedCurve,
+    sourceDuration,
+    duration,
+    keyframes: normalizeVisualKeyframes(segment?.keyframes).map((frame) => ({
+      ...frame,
+      time: Math.min(duration, frame.time * timeScale),
+    })),
+  };
+}
+
+function visualSourceIdentity(segment) {
+  if (!segment || typeof segment !== "object") return "";
+  for (const key of ["assetVersionId", "assetId", "sourceUrl", "src"]) {
+    const value = typeof segment[key] === "string" ? segment[key].trim() : "";
+    if (value) return `${key}:${value}`;
+  }
+  return "";
+}
+
+export function shouldSeekPreviewVideoOnSegmentChange(
+  previousSegment,
+  nextSegment,
+  isPlaying,
+) {
+  if (!isPlaying || previousSegment?.type !== "video" || nextSegment?.type !== "video") {
+    return true;
+  }
+  const previousSource = visualSourceIdentity(previousSegment);
+  if (!previousSource || previousSource !== visualSourceIdentity(nextSegment)) return true;
+  const previousMediaLocation = [previousSegment.sourceUrl, previousSegment.src]
+    .find((value) => typeof value === "string" && value.trim());
+  const nextMediaLocation = [nextSegment.sourceUrl, nextSegment.src]
+    .find((value) => typeof value === "string" && value.trim());
+  if (
+    previousMediaLocation
+    && nextMediaLocation
+    && previousMediaLocation !== nextMediaLocation
+  ) return true;
+  if (
+    requiresTimelineDrivenVideoFrames(previousSegment)
+    || requiresTimelineDrivenVideoFrames(nextSegment)
+  ) {
+    return true;
+  }
+  const previousSourceEnd = getVisualSourceTime(
+    previousSegment,
+    Math.max(0, Number(previousSegment.duration) || 0),
+  );
+  const nextSourceStart = getVisualSourceTime(nextSegment, 0);
+  return Math.abs(previousSourceEnd - nextSourceStart) > KEYFRAME_TIME_TOLERANCE;
+}
+
+/** Resize a visual clip on the timeline without silently trimming its source.
+ * Video duration changes are speed changes: the selected source range remains
+ * stable and playbackRate is derived from the requested timeline duration.
+ * The following split half provides an authoritative source boundary that can
+ * also repair documents written by the former lossy resize implementation. */
+export function resizeVisualSegmentDuration(segment, requestedDuration, { nextSegment = null } = {}) {
+  const duration = Math.max(
+    MIN_VISUAL_SEGMENT_SECONDS,
+    Math.min(MAX_TIMELINE_DURATION_SECONDS, Number(requestedDuration) || MIN_VISUAL_SEGMENT_SECONDS),
+  );
+  if (segment?.type !== "video") return { ...segment, duration };
+
+  const previousDuration = Math.max(
+    MIN_VISUAL_SEGMENT_SECONDS,
+    Number(segment?.duration) || MIN_VISUAL_SEGMENT_SECONDS,
+  );
+  const sourceStart = Math.max(0, Number(segment?.sourceStart) || 0);
+  const storedSourceDuration = Math.max(
+    MIN_VISUAL_SEGMENT_SECONDS,
+    Number(segment?.sourceDuration) || previousDuration * normalizeVisualPlaybackRate(segment?.playbackRate),
+  );
+  const sameSource = visualSourceIdentity(segment) !== ""
+    && visualSourceIdentity(segment) === visualSourceIdentity(nextSegment);
+  const followingBoundary = sameSource
+    ? Math.max(0, Number(nextSegment?.sourceStart) || 0) - sourceStart
+    : 0;
+  const sourceDuration = Math.max(storedSourceDuration, followingBoundary);
+
+  return updateVisualSegmentPlaybackRate(
+    { ...segment, sourceStart, sourceDuration },
+    sourceDuration / duration,
+  );
+}
+
+function normalizeVisualProperty(key, value) {
+  if (COLOR_GRADE_KEYFRAME_KEYS.includes(key)) return normalizeColorGradeProperty(key, value);
+  if (key === "scale") return Math.max(0.1, Number(value) || 1);
+  if (key === "opacity") return Math.max(0, Math.min(1, Number.isFinite(Number(value)) ? Number(value) : 1));
+  return Number(value) || 0;
+}
+
+export function normalizeVisualTransform(value = {}) {
+  return {
+    x: Number(value.x) || 0,
+    y: Number(value.y) || 0,
+    scale: Math.max(0.1, Number(value.scale) || 1),
+    rotation: Number(value.rotation) || 0,
+    opacity: Math.max(0, Math.min(1, Number.isFinite(Number(value.opacity)) ? Number(value.opacity) : 1)),
+  };
+}
+
+export function normalizeVisualKeyframes(keyframes = []) {
+  return keyframes
+    .filter((frame) => frame && Number.isFinite(Number(frame.time)))
+    .map((frame) => ({ ...frame, time: Math.max(0, Number(frame.time)) }))
+    .sort((a, b) => a.time - b.time)
+    .reduce((frames, frame) => {
+      const previous = frames.at(-1);
+      if (!previous || Math.abs(previous.time - frame.time) > KEYFRAME_TIME_TOLERANCE) {
+        frames.push(frame);
+        return frames;
+      }
+      frames[frames.length - 1] = { ...previous, ...frame };
+      return frames;
+    }, []);
+}
+
+export function resolveVisualTransform(keyframes = [], time = 0, baseTransform = DEFAULT_TRANSFORM) {
+  const safeTime = Math.max(0, Number(time) || 0);
+  const normalizedKeyframes = normalizeVisualKeyframes(keyframes);
+  const normalizedBaseTransform = normalizeVisualTransform(baseTransform);
+  return Object.fromEntries(VISUAL_TRANSFORM_KEYS.map((key) => {
+    const frames = normalizedKeyframes
+      .filter((frame) => Number.isFinite(Number(frame[key])))
+      .map((frame) => ({ time: Math.max(0, Number(frame.time) || 0), value: normalizeVisualProperty(key, frame[key]) }))
+      .sort((a, b) => a.time - b.time);
+    if (!frames.length) return [key, normalizedBaseTransform[key]];
+    // A keyframe starts controlling its property at its own timestamp. Before
+    // the first keyframe the clip must retain its unmodified default value.
+    if (safeTime < frames[0].time) return [key, normalizedBaseTransform[key]];
+    if (safeTime === frames[0].time) return [key, frames[0].value];
+    if (safeTime >= frames.at(-1).time) return [key, frames.at(-1).value];
+    const rightIndex = frames.findIndex((frame) => frame.time >= safeTime);
+    const left = frames[rightIndex - 1];
+    const right = frames[rightIndex];
+    const progress = (safeTime - left.time) / Math.max(0.0001, right.time - left.time);
+    return [key, left.value + (right.value - left.value) * progress];
+  }));
+}
+
+export function upsertVisualKeyframe(keyframes = [], time, transform) {
+  const safeTime = Math.max(0, Number(time) || 0);
+  const normalized = normalizeVisualKeyframes(keyframes);
+  const matching = normalized.filter((frame) => Math.abs(frame.time - safeTime) <= KEYFRAME_TIME_TOLERANCE);
+  const next = normalized.filter((frame) => Math.abs(frame.time - safeTime) > KEYFRAME_TIME_TOLERANCE);
+  next.push({ ...Object.assign({}, ...matching), time: safeTime, ...normalizeVisualTransform(transform) });
+  return normalizeVisualKeyframes(next);
+}
+
+export function hasVisualPropertyKeyframe(keyframes = [], time, key) {
+  return normalizeVisualKeyframes(keyframes).some((frame) => Math.abs(frame.time - (Number(time) || 0)) <= KEYFRAME_TIME_TOLERANCE && Number.isFinite(Number(frame[key])));
+}
+
+export function upsertVisualPropertyKeyframe(keyframes = [], time, key, value) {
+  if (!VISUAL_PROPERTY_KEYS.includes(key)) return keyframes;
+  const safeTime = Math.max(0, Number(time) || 0);
+  const normalized = normalizeVisualKeyframes(keyframes);
+  const matching = normalized.filter((frame) => Math.abs(frame.time - safeTime) <= KEYFRAME_TIME_TOLERANCE);
+  const next = normalized.filter((frame) => Math.abs(frame.time - safeTime) > KEYFRAME_TIME_TOLERANCE);
+  next.push({ ...Object.assign({}, ...matching), time: safeTime, [key]: normalizeVisualProperty(key, value) });
+  return normalizeVisualKeyframes(next);
+}
+
+export function removeVisualPropertyKeyframe(keyframes = [], time, key) {
+  return normalizeVisualKeyframes(keyframes).flatMap((frame) => {
+    if (Math.abs(frame.time - (Number(time) || 0)) > KEYFRAME_TIME_TOLERANCE || !(key in frame)) return [frame];
+    const { [key]: _removed, ...rest } = frame;
+    return VISUAL_PROPERTY_KEYS.some((property) => property in rest) ? [rest] : [];
+  });
+}
+
+export function snapVisualScaleToFrameEdges(transform = {}, frame = {}, thresholdPixels = 8, contentBox = frame) {
+  const width = Math.max(1, Number(frame.width) || 1);
+  const height = Math.max(1, Number(frame.height) || 1);
+  const boxWidth = Math.max(1, Number(contentBox?.width) || width);
+  const boxHeight = Math.max(1, Number(contentBox?.height) || height);
+  const scale = Math.max(0.1, Number(transform.scale) || 1);
+  const centerX = width * (0.5 + (Number(transform.x) || 0) / 100);
+  const centerY = height * (0.5 + (Number(transform.y) || 0) / 100);
+  const radians = (Number(transform.rotation) || 0) * Math.PI / 180;
+  const cosine = Math.abs(Math.cos(radians));
+  const sine = Math.abs(Math.sin(radians));
+  const horizontalExtent = Math.max(0.5, (cosine * boxWidth + sine * boxHeight) / 2);
+  const verticalExtent = Math.max(0.5, (sine * boxWidth + cosine * boxHeight) / 2);
+  const divisions = [
+    { ratio: 0, xGuide: "left", yGuide: "top" },
+    { ratio: 0.25, xGuide: "quarter-x-1", yGuide: "quarter-y-1" },
+    { ratio: 0.5, xGuide: "center-x", yGuide: "center-y" },
+    { ratio: 0.75, xGuide: "quarter-x-3", yGuide: "quarter-y-3" },
+    { ratio: 1, xGuide: "right", yGuide: "bottom" },
+  ];
+  const targets = divisions.flatMap(({ ratio, xGuide, yGuide }) => {
+    const guideX = ratio * width;
+    const guideY = ratio * height;
+    return [
+      { scale: (centerX - guideX) / horizontalExtent, guide: xGuide, extent: horizontalExtent },
+      { scale: (guideX - centerX) / horizontalExtent, guide: xGuide, extent: horizontalExtent },
+      { scale: (centerY - guideY) / verticalExtent, guide: yGuide, extent: verticalExtent },
+      { scale: (guideY - centerY) / verticalExtent, guide: yGuide, extent: verticalExtent },
+    ];
+  }).filter((target) => Number.isFinite(target.scale) && target.scale >= 0.1 && target.scale <= 4);
+  const nearest = targets.reduce((best, target) => {
+    const distance = Math.abs(scale - target.scale) * target.extent;
+    return distance < best.distance ? { ...target, distance } : best;
+  }, { distance: Infinity });
+  if (nearest.distance > Math.max(1, Number(thresholdPixels) || 8)) return { transform, guides: [] };
+  const snappedScale = nearest.scale;
+  const guideOrder = ["left", "quarter-x-1", "center-x", "quarter-x-3", "right", "top", "quarter-y-1", "center-y", "quarter-y-3", "bottom"];
+  const guides = [...new Set(targets
+    .filter((target) => Math.abs(snappedScale - target.scale) * target.extent <= 0.75)
+    .map((target) => target.guide))].sort((left, right) => guideOrder.indexOf(left) - guideOrder.indexOf(right));
+  return { transform: { ...transform, scale: snappedScale }, guides };
+}
+
+export function getVisualMaskCss(mask = {}) {
+  const feather = Math.max(0, Math.min(40, Number(mask.feather) || 0));
+  const edge = Math.max(0, 50 - feather);
+  if (mask.type === "circle") return `radial-gradient(circle at 50% 50%, #000 ${edge}%, transparent 50%)`;
+  if (mask.type === "rounded") return "linear-gradient(#000, #000)";
+  return "";
+}
+
+export function getVisualMaskInsets(mask = {}) {
+  const centerX = Number.isFinite(mask.centerX) ? mask.centerX : 50;
+  const centerY = Number.isFinite(mask.centerY) ? mask.centerY : 50;
+  const width = Number.isFinite(mask.width) ? mask.width : 80;
+  const height = Number.isFinite(mask.height) ? mask.height : 80;
+  return {
+    top: Math.max(0, centerY - height / 2),
+    right: Math.max(0, 100 - (centerX + width / 2)),
+    bottom: Math.max(0, 100 - (centerY + height / 2)),
+    left: Math.max(0, centerX - width / 2),
+  };
+}
+
+export function getCircleMaskCss(mask = {}, frame = {}) {
+  if (mask.type !== "circle") return "";
+  const feather = Math.max(0, Math.min(40, Number(mask.feather) || 0));
+  if (!feather && !mask.inverted) return "";
+  const width = Math.max(1, Number(frame.width) || 1);
+  const height = Math.max(1, Number(frame.height) || 1);
+  const radius = ((Number.isFinite(mask.size) ? mask.size : 72) / 200) * Math.min(width, height);
+  const centerX = Number.isFinite(mask.centerX) ? mask.centerX : 50;
+  const centerY = Number.isFinite(mask.centerY) ? mask.centerY : 50;
+  const innerStop = Math.max(0, 100 - feather);
+  return `radial-gradient(circle ${radius}px at ${centerX}% ${centerY}%, ${mask.inverted ? "transparent" : "#000"} ${innerStop}%, ${mask.inverted ? "#000" : "transparent"} 100%)`;
+}
+
+export function getVisualMaskGeometry(mask = {}, frame = {}) {
+  const frameWidth = Math.max(1, Number(frame.width) || 1);
+  const frameHeight = Math.max(1, Number(frame.height) || 1);
+  const centerX = (Number.isFinite(mask.centerX) ? mask.centerX : 50) / 100 * frameWidth;
+  const centerY = (Number.isFinite(mask.centerY) ? mask.centerY : 50) / 100 * frameHeight;
+  if (mask.type === "circle") {
+    const diameter = (Number.isFinite(mask.size) ? mask.size : 72) / 100 * Math.min(frameWidth, frameHeight);
+    return { centerX, centerY, width: diameter, height: diameter, radius: diameter / 2, cornerRadius: diameter / 2 };
+  }
+  const width = (Number.isFinite(mask.width) ? mask.width : 80) / 100 * frameWidth;
+  const height = (Number.isFinite(mask.height) ? mask.height : 80) / 100 * frameHeight;
+  const cornerRadius = mask.type === "rounded"
+    ? Math.min(width, height) * (Number.isFinite(mask.cornerRadius) ? mask.cornerRadius : 12) / 100
+    : 0;
+  return { centerX, centerY, width, height, radius: 0, cornerRadius };
+}
+
+export function getVisualMaskFeatherPixels(mask = {}, frame = {}) {
+  if (!mask.type || mask.type === "none") return 0;
+  const geometry = getVisualMaskGeometry(mask, frame);
+  return Math.max(0, Math.min(40, Number(mask.feather) || 0)) / 100 * Math.min(geometry.width, geometry.height) * 0.25;
+}
+
+export function getVisualMaskSvgDataUrl(mask = {}, frame = {}) {
+  if (!mask.type || mask.type === "none") return "";
+  const width = Math.max(1, Math.round(Number(frame.width) || 1));
+  const height = Math.max(1, Math.round(Number(frame.height) || 1));
+  const geometry = getVisualMaskGeometry(mask, { width, height });
+  const feather = getVisualMaskFeatherPixels(mask, { width, height });
+  if (!feather && !mask.inverted) return "";
+  const x = geometry.centerX - geometry.width / 2;
+  const y = geometry.centerY - geometry.height / 2;
+  const shape = mask.type === "circle"
+    ? `<circle cx="${geometry.centerX}" cy="${geometry.centerY}" r="${geometry.radius}" fill="${mask.inverted ? "black" : "white"}"${feather ? ' filter="url(#blur)"' : ""}/>`
+    : `<rect x="${x}" y="${y}" width="${geometry.width}" height="${geometry.height}" rx="${geometry.cornerRadius}" fill="${mask.inverted ? "black" : "white"}"${feather ? ' filter="url(#blur)"' : ""}/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs>${feather ? `<filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${feather}"/></filter>` : ""}<mask id="mask" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="${mask.inverted ? "white" : "black"}"/>${shape}</mask></defs><rect width="${width}" height="${height}" fill="white" mask="url(#mask)"/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}

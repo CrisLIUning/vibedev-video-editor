@@ -1,0 +1,60 @@
+{
+  "name": "web-player",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local-first browser AI video editor for WebGPU AI music, AI repair, voiceovers, captions, talking avatars, and deterministic export.",
+  "license": "MIT",
+  "homepage": "https://video-editor.ai-creator.top/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MartinDelophy/ai-video-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MartinDelophy/ai-video-editor/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "agent": "node scripts/timeline-command.mjs",
+    "mcp": "node skills/edit-timeline-studio/mcp/server.mjs",
+    "skill:doctor": "node skills/edit-timeline-studio/scripts/setup-host.mjs --check",
+    "skill:setup": "node skills/edit-timeline-studio/scripts/setup-host.mjs --install",
+    "preview": "vite preview --host 0.0.0.0",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "@diffusionstudio/vits-web": "^1.0.3",
+    "@huggingface/transformers": "^3.8.1",
+    "@libav.js/variant-webcodecs": "^6.9.8",
+    "@mediabunny/aac-encoder": "^1.50.8",
+    "@mediapipe/tasks-vision": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "fflate": "^0.8.3",
+    "hangul-romanization": "^1.0.1",
+    "kokoro-js": "^1.2.1",
+    "mediabunny": "^1.50.8",
+    "onnxruntime-web": "^1.27.0",
+    "onnxruntime-web-migan": "npm:onnxruntime-web@^1.16.3",
+    "pinyin-pro": "^3.27.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.5",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.2"
+  }
+}

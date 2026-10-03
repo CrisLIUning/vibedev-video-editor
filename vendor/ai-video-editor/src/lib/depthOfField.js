@@ -1,0 +1,157 @@
+export const DEPTH_MODEL_REPOSITORY = "timeline-studio-onnx-models";
+export const DEPTH_MODEL_PATH = "depth-anything-v2-small";
+export const DEPTH_MODEL_HUGGING_FACE_REVISION = "a0806c6fb9484894dcb78df523156d244461515d";
+export const DEPTH_MODEL_MODELSCOPE_REVISION = "4cc757f80330e22cb8f82b628c53ceca6307fd12";
+
+export const DEFAULT_CINEMATIC_DEPTH = Object.freeze({
+  enabled: false,
+  focus: 0.72,
+  focusRange: 0.16,
+  blur: 18,
+  quality: "balanced",
+  highlightBoost: 0.22,
+});
+
+const clamp = (value, minimum, maximum, fallback) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+};
+
+export function normalizeCinematicDepth(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...DEFAULT_CINEMATIC_DEPTH,
+    ...source,
+    enabled: source.enabled === true,
+    focus: clamp(source.focus, 0, 1, DEFAULT_CINEMATIC_DEPTH.focus),
+    focusRange: clamp(source.focusRange, 0.04, 0.48, DEFAULT_CINEMATIC_DEPTH.focusRange),
+    blur: clamp(source.blur, 0, 40, DEFAULT_CINEMATIC_DEPTH.blur),
+    quality: ["fast", "balanced", "quality"].includes(source.quality)
+      ? source.quality
+      : DEFAULT_CINEMATIC_DEPTH.quality,
+    highlightBoost: clamp(source.highlightBoost, 0, 0.7, DEFAULT_CINEMATIC_DEPTH.highlightBoost),
+  };
+}
+
+export function resolveDepthAnalysisAtTime(analysis, time = 0) {
+  if (!analysis) return null;
+  if (!Array.isArray(analysis.samples) || !analysis.samples.length) return analysis.depthUrl ? analysis : null;
+  const target = Math.max(0, Number(time) || 0);
+  let selected = analysis.samples[0];
+  let distance = Math.abs((Number(selected.time) || 0) - target);
+  for (const sample of analysis.samples) {
+    const nextDistance = Math.abs((Number(sample.time) || 0) - target);
+    if (nextDistance <= distance) {
+      selected = sample;
+      distance = nextDistance;
+    } else if ((Number(sample.time) || 0) > target) break;
+  }
+  return { ...selected, sourceSize: analysis.sourceSize, complete: analysis.complete };
+}
+
+const layerCache = new WeakMap();
+
+function getLayers(canvas) {
+  let layers = layerCache.get(canvas);
+  if (!layers) {
+    layers = {
+      sharp: document.createElement("canvas"),
+      blurred: document.createElement("canvas"),
+      mask: document.createElement("canvas"),
+      result: document.createElement("canvas"),
+    };
+    layerCache.set(canvas, layers);
+  }
+  Object.values(layers).forEach((layer) => {
+    if (layer.width !== canvas.width) layer.width = canvas.width;
+    if (layer.height !== canvas.height) layer.height = canvas.height;
+  });
+  return layers;
+}
+
+function getFitRect(source, canvas, fitMode = "contain") {
+  const sourceWidth = Math.max(1, Number(source?.videoWidth || source?.naturalWidth || source?.width) || 1);
+  const sourceHeight = Math.max(1, Number(source?.videoHeight || source?.naturalHeight || source?.height) || 1);
+  const scale = fitMode === "cover"
+    ? Math.max(canvas.width / sourceWidth, canvas.height / sourceHeight)
+    : Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  return { x: (canvas.width - width) / 2, y: (canvas.height - height) / 2, width, height };
+}
+
+function paintFitted(context, source, canvas, fitMode, filter = "none", scale = 1) {
+  const rect = getFitRect(source, canvas, fitMode);
+  context.save();
+  context.filter = filter || "none";
+  if (scale !== 1) {
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.scale(scale, scale);
+    context.translate(-canvas.width / 2, -canvas.height / 2);
+  }
+  context.drawImage(source, rect.x, rect.y, rect.width, rect.height);
+  context.restore();
+  return rect;
+}
+
+function smoothstep(edge0, edge1, value) {
+  const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(0.0001, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Draws one depth-aware frame. Depth Anything emits relative inverse depth,
+ * where brighter pixels are normally nearer to the camera.
+ */
+export function drawCinematicDepthFrame(context, source, canvas, options = {}) {
+  const effect = normalizeCinematicDepth(options.effect);
+  const depthVisual = options.depthVisual;
+  const fitMode = options.fitMode || "contain";
+  const filter = options.filter || "none";
+  const shouldClear = options.clear !== false;
+  if (!effect.enabled || !depthVisual || effect.blur <= 0) {
+    if (shouldClear) context.clearRect(0, 0, canvas.width, canvas.height);
+    paintFitted(context, source, canvas, fitMode, filter);
+    return;
+  }
+
+  const layers = getLayers(canvas);
+  const sharpContext = layers.sharp.getContext("2d", { willReadFrequently: false });
+  const blurContext = layers.blurred.getContext("2d", { willReadFrequently: false });
+  const maskContext = layers.mask.getContext("2d", { willReadFrequently: true });
+  const resultContext = layers.result.getContext("2d", { willReadFrequently: false });
+  [sharpContext, blurContext, maskContext, resultContext].forEach((layerContext) => {
+    layerContext.setTransform(1, 0, 0, 1, 0, 0);
+    layerContext.clearRect(0, 0, canvas.width, canvas.height);
+  });
+
+  paintFitted(sharpContext, source, layers.sharp, fitMode, filter);
+  const blurFilter = `${filter && filter !== "none" ? `${filter} ` : ""}blur(${effect.blur}px) brightness(${1 + effect.highlightBoost * 0.08})`;
+  paintFitted(blurContext, source, layers.blurred, fitMode, blurFilter, 1 + Math.min(0.08, effect.blur / 500));
+  paintFitted(maskContext, depthVisual, layers.mask, fitMode, "none");
+
+  const image = maskContext.getImageData(0, 0, canvas.width, canvas.height);
+  const data = image.data;
+  const focus = effect.focus * 255;
+  const halfBand = effect.focusRange * 255;
+  const feather = Math.max(8, halfBand * 0.72);
+  for (let index = 0; index < data.length; index += 4) {
+    const depth = data[index];
+    const distance = Math.abs(depth - focus);
+    const alpha = Math.round(255 * smoothstep(halfBand, halfBand + feather, distance));
+    data[index] = 255;
+    data[index + 1] = 255;
+    data[index + 2] = 255;
+    data[index + 3] = alpha;
+  }
+  maskContext.putImageData(image, 0, 0);
+
+  blurContext.save();
+  blurContext.globalCompositeOperation = "destination-in";
+  blurContext.drawImage(layers.mask, 0, 0);
+  blurContext.restore();
+  resultContext.drawImage(layers.sharp, 0, 0);
+  resultContext.drawImage(layers.blurred, 0, 0);
+  if (shouldClear) context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(layers.result, 0, 0);
+}

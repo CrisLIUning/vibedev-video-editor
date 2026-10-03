@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/MartinDelophy/ai-video-editor.git",
+  "commit": "d4aa5d782b41d23b14536413a2b7530d4d53dff3",
+  "sourceDirectory": "vendor/ai-video-editor",
+  "license": "MIT",
+  "include": [
+    "src",
+    "public",
+    "scripts",
+    "skills",
+    "index.html",
+    "package.json",
+    "package-lock.json",
+    "vite.config.mjs",
+    "tsconfig.json",
+    ".gitignore",
+    "LICENSE",
+    "MODEL_LICENSES.md",
+    "README.md"
+  ],
+  "exclude": [
+    ".git",
+    ".codex",
+    ".github",
+    ".playwright-cli",
+    "node_modules",
+    "dist",
+    "blob-report",
+    ".cache",
+    ".npm-cache",
+    "public/models"
+  ],
+  "build": {
+    "packageManager": "npm",
+    "command": ["npm", "run", "build"],
+    "outputDirectory": "dist"
+  },
+  "distribution": {
+    "bundleFfmpegWasm": false,
+    "bundleRuntimeWasm": true,
+    "bundleModels": false
+  }
+}

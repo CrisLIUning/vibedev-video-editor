@@ -1,0 +1,31 @@
+{
+  "name": "@open-design/video-editor-bridge",
+  "version": "0.15.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "npm run build:contract && npm run build:editor",
+    "build:contract": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "build:editor": "tsx ../../scripts/build-ai-video-editor-host.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0",
+    "jsdom": "29.1.1",
+    "tsx": "4.22.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.6"
+  }
+}

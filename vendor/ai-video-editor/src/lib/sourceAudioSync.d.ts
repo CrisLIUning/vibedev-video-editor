@@ -1,0 +1,1 @@
+export function shouldMuteEmbeddedVideoAudio(segment: Record<string, unknown>, options?: { sourceAudioBlob?: Blob | null; sourceAudioAssetId?: string; linkedSegments?: Array<Record<string, unknown>>; visualSegments?: Array<Record<string, unknown>> }): boolean;

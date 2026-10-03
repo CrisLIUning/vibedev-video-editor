@@ -1,0 +1,27 @@
+{
+  "name": "vibedev-video-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VibeDev 剪辑台：嵌入式视频编辑器（ai-video-editor 的 VibeDev 分支）、宿主桥接和 DeepSeek Harness 宿主页",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/video-editor-bridge"
+  ],
+  "scripts": {
+    "setup": "npm ci --prefix vendor/ai-video-editor --no-audit --no-fund",
+    "build": "npm run build --workspace @open-design/video-editor-bridge",
+    "build:dsh": "tsx scripts/build-dsh.ts",
+    "test": "npm test --workspace @open-design/video-editor-bridge && npm run test:dsh",
+    "test:dsh": "vitest run --config dsh/vitest.config.ts",
+    "typecheck": "npm run typecheck --workspace @open-design/video-editor-bridge && tsc -p dsh/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "esbuild": "0.28.0",
+    "jsdom": "29.1.1",
+    "tsx": "4.22.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.6"
+  }
+}

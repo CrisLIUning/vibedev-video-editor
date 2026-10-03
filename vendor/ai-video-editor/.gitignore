@@ -1,0 +1,47 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+blob-report/
+
+# AI model weights are hosted externally and downloaded at runtime.
+public/models/
+
+# local QA captures and generated media
+AGENTS.md
+
+# local package/cache files
+.npm-cache/
+.cache/
+.npmrc
+.netlify/
+.vite/
+.vite-temp/
+.artifacts/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# local environment
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+**/.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local Netlify folder
+.netlify
