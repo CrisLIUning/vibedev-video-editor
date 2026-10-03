@@ -16,7 +16,8 @@ const tf = moduleStub.exports;
 function worker(extra = '') {
   const messages: any[] = [];
   const self: any = { addEventListener() {}, postMessage(value: any) { messages.push(value); } };
-  runInNewContext(workerSource.replace(/^import .*;\n/, '') + `
+  // Plain \n first: on a Windows (CRLF) checkout the import line would survive.
+  runInNewContext(workerSource.replace(/\r\n/g, '\n').replace(/^import .*;\n/, '') + `
     self.api = { inverseChannel, separate, wavBuffer, FFT_SIZE, HOP_SIZE, CHUNK_SIZE, PADDING,
       configure(runtime, model) { runtimePromise = Promise.resolve(runtime); modelPromise = Promise.resolve(model); } };
     ${extra}

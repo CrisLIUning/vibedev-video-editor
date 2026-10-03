@@ -19,7 +19,10 @@ import {
   isSilentSourceError,
   reportsNoAudioStream,
 } from '../../../vendor/ai-video-editor/src/lib/sourceAudioAvailability.js';
-import videoExportSource from '../../../vendor/ai-video-editor/src/hooks/useVideoExport.js?raw';
+import videoExportRaw from '../../../vendor/ai-video-editor/src/hooks/useVideoExport.js?raw';
+
+// A Windows checkout has CRLF line endings; the pinned lines are written with \n.
+const videoExportSource = videoExportRaw.replace(/\r\n/g, '\n');
 
 /**
  * A video clip's own sound, in the browser export.

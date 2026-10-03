@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import appSource from '../../../vendor/ai-video-editor/src/App.jsx?raw';
-import voiceGenerationSource from '../../../vendor/ai-video-editor/src/hooks/useVoiceGeneration.js?raw';
+import appRaw from '../../../vendor/ai-video-editor/src/App.jsx?raw';
+import voiceGenerationRaw from '../../../vendor/ai-video-editor/src/hooks/useVoiceGeneration.js?raw';
+
+// A Windows checkout has CRLF line endings, and `.` in a regular expression
+// does not match `\r`, so the comment stripping below needs plain \n.
+const appSource = appRaw.replace(/\r\n/g, '\n');
+const voiceGenerationSource = voiceGenerationRaw.replace(/\r\n/g, '\n');
 
 // Field report (2026-09-03): generating a voiceover with the local TTS engine
 // threw "Cannot read properties of undefined (reading 'current')" and nothing
