@@ -42,6 +42,92 @@
         color: var(--vibedev-editor-danger, #dc2626);
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
       }
+      .consent {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483601;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+        background: rgba(0, 0, 0, 0.32);
+      }
+      .consent-card {
+        box-sizing: border-box;
+        width: min(420px, 100%);
+        max-height: calc(100vh - 32px);
+        overflow: auto;
+        padding: 18px 20px;
+        border: 1px solid var(--vibedev-editor-border, #e4e1db);
+        border-radius: 10px;
+        background: var(--vibedev-editor-elevated, #fffefc);
+        color: var(--vibedev-editor-text, #1a1916);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24);
+      }
+      .consent-card h2 {
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .consent-lead {
+        margin: 0 0 12px;
+      }
+      .consent-facts {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 12px;
+        margin: 0 0 12px;
+      }
+      .consent-facts dt {
+        color: var(--vibedev-editor-text-muted, #74716b);
+      }
+      .consent-facts dd {
+        min-width: 0;
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .consent-facts a {
+        color: var(--vibedev-editor-accent, #d77757);
+      }
+      .consent-note {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--vibedev-editor-text-muted, #74716b);
+      }
+      .consent-group {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        margin: 0 0 12px;
+        color: var(--vibedev-editor-text-muted, #74716b);
+      }
+      .consent-group input {
+        margin: 3px 0 0;
+        accent-color: var(--vibedev-editor-accent, #d77757);
+      }
+      .consent-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .consent-actions button {
+        padding: 5px 14px;
+        border: 1px solid var(--vibedev-editor-border, #e4e1db);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+      .consent-actions button.primary {
+        border-color: var(--vibedev-editor-accent, #d77757);
+        background: var(--vibedev-editor-accent, #d77757);
+        color: #fff;
+      }
+      .consent-actions button:focus-visible {
+        outline: 2px solid var(--vibedev-editor-accent, #d77757);
+        outline-offset: 2px;
+      }
       [hidden] {
         display: none !important;
       }

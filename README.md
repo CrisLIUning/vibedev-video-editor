@@ -33,7 +33,7 @@ dsh-film 的 `node scripts/build-apps.mjs editor` 会调用 `build:dsh`，把 `d
 - **两个功能先关掉**（`src/config/vibedevFeatures.js`）：换脸（模型依赖 InsightFace，只许非商业研究）、AI 配乐（Stable Audio，许可条款待定）。
 - 嵌入宿主所需的改动：语言、弹层、地址前缀、宿主保存导出、主机项目画幅等，均标 `FORK:`。
 
-模型权重不在包里，用到时从 VibeDev 的镜像或模型原站下载；各模型的许可见 `vendor/ai-video-editor/MODEL_LICENSES.md`。
+模型权重不在包里，用到时从 VibeDev 的镜像或模型原站下载；各模型的许可见 `vendor/ai-video-editor/MODEL_LICENSES.md`。在 DeepSeek Harness 里，宿主页实现了 `prepareModel` / `ensureModelConsent`（`dsh/src/models.ts`）：第一次用到某个模型时先弹框说明用途、大小、许可和来源（`dsh/src/consent.ts`），同意后由 dsh-film 下载、校验并从它自己的路由供给，编辑器的 worker 直接取用；拒绝过的字幕字体在本次打开期间不再追问。还没走宿主的：“智能”工具的主体识别（YOLOS-tiny、MODNet）仍由浏览器直接从 VibeDev 镜像下载。
 
 ## License
 

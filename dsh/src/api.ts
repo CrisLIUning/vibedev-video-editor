@@ -72,24 +72,26 @@ const board = encodeURIComponent(projectId);
 const projectQuery = `?project=${encodeURIComponent(projectId)}`;
 
 async function reply<T>(response: Response, label: string): Promise<T> {
-  if (response.status === 409) {
-    const payload = await response.json().catch(() => null) as { current?: TimelineState; error?: unknown } | null;
-    // A 409 we cannot read is not a cut with no document: adopting one would
-    // autosave an empty timeline over the person's work.
-    if (payload?.current && typeof payload.current.revision === 'number') throw new TimelineConflictError(payload.current);
-    throw new HostRequestError(`${label}：剪辑已被别处改过，且读不到当前状态`, 409, 'CANVAS_TIMELINE_CONFLICT_UNREADABLE');
-  }
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+    const payload = await response.json().catch(() => null) as { current?: TimelineState; error?: unknown; code?: unknown } | null;
     const error = payload?.error;
+    const code = typeof payload?.code === 'string'
+      ? payload.code
+      : typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : undefined;
+    if (response.status === 409) {
+      if (payload?.current && typeof payload.current.revision === 'number') throw new TimelineConflictError(payload.current);
+      // A timeline conflict we cannot read is not a cut with no document:
+      // adopting one would autosave an empty timeline over the person's work.
+      // Other refusals with 409 (a model download not agreed to yet) say what they are.
+      if (code === undefined || code.startsWith('CANVAS_TIMELINE')) {
+        throw new HostRequestError(`${label}：剪辑已被别处改过，且读不到当前状态`, 409, 'CANVAS_TIMELINE_CONFLICT_UNREADABLE');
+      }
+    }
     const message = typeof error === 'string' && error !== ''
       ? error
       : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
         ? (error as { message: string }).message
         : `${label} (${response.status})`;
-    const code = typeof payload?.code === 'string'
-      ? payload.code
-      : typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : undefined;
     throw new HostRequestError(message, response.status, code);
   }
   return await response.json() as T;
@@ -220,4 +222,58 @@ export const swapVersion = async (body: { clipId: string; source: { nodeId: stri
 /** Studio's URL for a film file; cuts and the authorization list keep these. */
 export function projectRawUrl(path: string): string {
   return `/api/projects/${board}/raw/${encodePath(path)}`;
+}
+
+/** An AI model the editor may download, as the plugin lists it. */
+export interface ModelListing {
+  id: string;
+  label: string;
+  capability: string;
+  revision: string;
+  license: { name: string; notice?: string; url?: string };
+  /** Models agreed to together (the caption fonts). */
+  group?: string;
+  groupSize?: number;
+  totalBytes: number;
+  sourceHosts: string[];
+  artifacts: { id: string; fileName: string; bytes: number }[];
+}
+
+export interface ModelTask {
+  taskId: string;
+  modelId: string;
+  status: 'running' | 'done' | 'failed' | 'interrupted';
+  progress: number;
+  phase: string;
+  error?: { code: string; message: string };
+}
+
+const modelPath = (modelId: string): string => `/api/media/video-editor-models/${encodeURIComponent(modelId)}`;
+
+export const listModels = (): Promise<{ models: ModelListing[] }> =>
+  studio('/api/media/video-editor-models', '读取模型列表');
+
+export const getModelConsent = (modelId: string): Promise<{ modelId: string; granted: boolean }> =>
+  studio(`${modelPath(modelId)}/consent`, '读取下载许可');
+
+/** Record the person's answer, for the model's whole group with `group`. */
+export const setModelConsent = (modelId: string, granted: boolean, group: boolean): Promise<{ modelIds: string[] }> =>
+  studio(`${modelPath(modelId)}/consent`, '记录下载许可', { method: 'POST', json: { granted, group } });
+
+/** Start getting a model ready; refused with `VIDEO_EDITOR_MODEL_CONSENT_REQUIRED` before the person agreed. */
+export const prepareModel = (modelId: string): Promise<{ taskId: string }> =>
+  studio(`${modelPath(modelId)}/prepare`, '准备模型', { method: 'POST', json: {} });
+
+export const getModelTask = (taskId: string): Promise<ModelTask> =>
+  studio(`/api/media/video-editor-model-tasks/${encodeURIComponent(taskId)}`, '读取模型下载进度');
+
+export const cancelModelTask = (taskId: string): Promise<unknown> =>
+  studio(`/api/media/video-editor-model-tasks/${encodeURIComponent(taskId)}/cancel`, '取消模型下载', { method: 'POST', json: {} });
+
+/**
+ * Where a model file is served: its own route, absolute, so the editor's
+ * workers can fetch it and a model's sibling files resolve beside it.
+ */
+export function modelFileUrl(modelId: string, revision: string, artifactId: string): string {
+  return new URL(`models/${modelId}/${revision}/${artifactId}`, pluginRoot()).href;
 }

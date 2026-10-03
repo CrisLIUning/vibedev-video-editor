@@ -12,6 +12,8 @@ import type {
 } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import * as api from './api.ts';
 import { installHostAdapter, projectId, toHostUrl, workspace } from './address.ts';
+import { createConsentPrompt } from './consent.ts';
+import { createModelAccess } from './models.ts';
 import { createCapabilityRuntime } from './runtime.ts';
 import { TimelineSession } from './session.ts';
 import type { NoticeTone } from './session.ts';
@@ -71,7 +73,7 @@ async function main(): Promise<void> {
     if (editor?.notify) editor.notify({ message, tone });
     else if (tone === 'error') showBanner(message);
   };
-  const runtime = createCapabilityRuntime({
+  const runtime = Object.assign(createCapabilityRuntime({
     uploadFile: api.uploadFile,
     importWorkspaceFile: api.importWorkspaceFile,
     executeCommands: api.executeCommands,
@@ -79,7 +81,7 @@ async function main(): Promise<void> {
     prepareTimeline: () => session.prepareTimeline(),
     onTimelineChanged: () => session.reloadTimeline(),
     onAssetsChanged: () => session.refreshMaterial(),
-  });
+  }), createModelAccess(api, createConsentPrompt()));
   const hostActions: VideoEditorHostActions = {
     keepExport: {
       hint: '导出的文件存进项目的 film/canvas/renders/ 并放上分镜画布，不下载到本地',
