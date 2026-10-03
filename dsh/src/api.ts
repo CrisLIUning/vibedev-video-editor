@@ -219,6 +219,30 @@ export const listVersions = (clipId: string): Promise<{ slot?: Slot; versions: T
 export const swapVersion = async (body: { clipId: string; source: { nodeId: string } | { path: string }; baseRevision: number; operationId: string }): Promise<{ name: string }> =>
   (await studio<{ swapped: { name: string } }>(`/api/canvas/timelines/${board}/version${projectQuery}`, '换版本', { method: 'POST', json: body })).swapped;
 
+/** A script the 剧本 menu offers: a screenplay of the 剧本 tab (`story:<id>`) or a text node on the board. */
+export interface ScriptSource {
+  id: string;
+  source: 'story' | 'board';
+  title: string;
+  lineCount: number;
+  preview: string;
+}
+
+export const listScripts = async (): Promise<ScriptSource[]> =>
+  (await studio<{ scripts: ScriptSource[] }>(`/api/canvas/timelines/${board}/scripts${projectQuery}`, '读取剧本')).scripts;
+
+export interface SoundPlaced {
+  captionId?: string;
+  clipId?: string;
+  text?: string;
+  start: number;
+  end: number;
+}
+
+/** A script onto the cut's shots, one caption per line, built on `baseRevision`. */
+export const placeSound = (body: { script: { storyDocumentId: string } | { nodeId: string }; baseRevision: number; operationId: string }): Promise<{ items: SoundPlaced[]; warnings: string[] }> =>
+  studio(`/api/canvas/timelines/${board}/sound${projectQuery}`, '放字幕', { method: 'POST', json: body });
+
 /** Studio's URL for a film file; cuts and the authorization list keep these. */
 export function projectRawUrl(path: string): string {
   return `/api/projects/${board}/raw/${encodePath(path)}`;

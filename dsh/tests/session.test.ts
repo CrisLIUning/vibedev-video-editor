@@ -260,6 +260,58 @@ describe('the storyboard as material', () => {
   });
 });
 
+describe('scripts', () => {
+  it('puts a screenplay on the cut as captions, on the revision it saved', async () => {
+    const requests: unknown[] = [];
+    const { api, setStored } = fakeApi({
+      placeSound: async (body) => {
+        requests.push(body);
+        setStored(state(4, archive('借个火')));
+        return { items: [{ captionId: 'k1', start: 0, end: 1.5 }, { captionId: 'k2', start: 1.7, end: 3 }], warnings: ['第 1 镜的台词比镜头长 0.4 s'] };
+      },
+    });
+    const open = session(api);
+    const { editor, documents } = fakeEditor();
+    await open.load();
+    open.attach(editor);
+    const notify = vi.fn();
+    await open.placeScript('story:doc_1', 'captions', notify);
+    await open.placeScript('note-7', 'captions', notify);
+    expect(requests).toEqual([
+      { script: { storyDocumentId: 'doc_1' }, baseRevision: 0, operationId: expect.stringMatching(/^console-script-/) },
+      { script: { nodeId: 'note-7' }, baseRevision: 4, operationId: expect.stringMatching(/^console-script-/) },
+    ]);
+    expect(documents.at(-1)?.upstreamDocument).toEqual(archive('借个火'));
+    expect(notify).toHaveBeenCalledWith('放上了 2 条字幕', 'success');
+    expect(notify).toHaveBeenCalledWith('第 1 镜的台词比镜头长 0.4 s', 'info');
+  });
+
+  it('has the editor speak each caption, asking again until it has imported it', async () => {
+    const { api } = fakeApi({ placeSound: async () => ({ items: [{ captionId: 'k1', start: 0, end: 1 }, { captionId: 'k2', start: 1, end: 2 }], warnings: [] }) });
+    const open = session(api);
+    const { editor } = fakeEditor();
+    const asked: string[] = [];
+    let first = true;
+    await open.load();
+    open.attach({
+      ...editor,
+      generateVoiceover: async (captionId: string) => {
+        asked.push(captionId);
+        if (first) {
+          first = false;
+          return { status: 'missing' as const };
+        }
+        return captionId === 'k2' ? { status: 'failed' as const, message: 'GPU 不支持 shader-f16' } : { status: 'done' as const };
+      },
+    });
+    const notify = vi.fn();
+    await open.placeScript('note-1', 'voice', notify);
+    expect(asked).toEqual(['k1', 'k1', 'k2']);
+    expect(notify).toHaveBeenCalledWith('这一条没配上音：GPU 不支持 shader-f16', 'error');
+    expect(notify).toHaveBeenLastCalledWith('配好了 1/2 条', 'error');
+  });
+});
+
 describe('takes', () => {
   it('swaps by board node or, for a take that left the board, by path', async () => {
     const swaps: unknown[] = [];

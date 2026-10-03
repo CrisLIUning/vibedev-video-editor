@@ -19,11 +19,12 @@ import type {
   VideoEditorHostEvent,
   VideoEditorProjectAspect,
   VideoEditorProjectFile,
+  VideoEditorVoiceOutcome,
 } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { HOST_PROJECT_ASPECTS } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { createEmptyTimelineArchive } from '../../packages/video-editor-bridge/src/empty-archive.ts';
 import { TimelineConflictError } from './api.ts';
-import type { PlacedClip, TimelineState, UploadedFile } from './api.ts';
+import type { PlacedClip, SoundPlaced, TimelineState, UploadedFile } from './api.ts';
 
 /** What the session needs from the plugin. */
 export interface SessionApi {
@@ -37,7 +38,15 @@ export interface SessionApi {
   landOnBoard?(body: { path: string; title?: string; durationSeconds?: number }): Promise<{ landedNodeId: string | null }>;
   placeBoardMedia?(body: { source: { nodeId: string }; baseRevision: number; operationId: string; track?: 'music'; at?: number }): Promise<PlacedClip>;
   swapVersion?(body: { clipId: string; source: { nodeId: string } | { path: string }; baseRevision: number; operationId: string }): Promise<{ name: string }>;
+  placeSound?(body: { script: { storyDocumentId: string } | { nodeId: string }; baseRevision: number; operationId: string }): Promise<{ items: SoundPlaced[]; warnings: string[] }>;
 }
+
+/** The id prefix of a screenplay in the 剧本 menu; other ids are board text nodes. */
+export const STORY_SCRIPT_PREFIX = 'story:';
+
+/** How long to keep asking the editor to speak a caption it has not imported yet, or while it speaks another. */
+const VOICE_ATTEMPTS = 25;
+const VOICE_RETRY_MS = 400;
 
 export type NoticeTone = 'info' | 'success' | 'error';
 
@@ -375,6 +384,59 @@ export class TimelineSession {
       notify(`没有换成：${message(error)}`, 'error');
       throw error;
     }
+  }
+
+  /**
+   * Put a script on the cut's shots, one caption per line, and in `voice`
+   * mode have the editor speak each caption: it puts the audio where the
+   * caption is, which is where the shot is.
+   */
+  async placeScript(scriptId: string, mode: 'captions' | 'voice', notify: (text: string, tone: NoticeTone) => void): Promise<void> {
+    const place = this.options.api.placeSound;
+    if (!place) return;
+    try {
+      await this.drainSaves();
+      const placed = await place({
+        script: scriptId.startsWith(STORY_SCRIPT_PREFIX) ? { storyDocumentId: scriptId.slice(STORY_SCRIPT_PREFIX.length) } : { nodeId: scriptId },
+        baseRevision: this.revision,
+        operationId: `console-script-${Date.now().toString(36)}`,
+      });
+      this.applyState(await this.options.api.getTimeline());
+      const captionIds = placed.items.flatMap(item => (item.captionId ? [item.captionId] : []));
+      notify(`放上了 ${captionIds.length} 条字幕`, mode === 'voice' ? 'info' : 'success');
+      for (const warning of placed.warnings) notify(warning, 'info');
+      if (mode !== 'voice' || captionIds.length === 0) return;
+      let spoken = 0;
+      for (const [index, captionId] of captionIds.entries()) {
+        notify(`正在配音 ${index + 1}/${captionIds.length}`, 'info');
+        const outcome = await this.speak(captionId);
+        if (this.disposed) return;
+        if (outcome.status === 'done') {
+          spoken += 1;
+          continue;
+        }
+        notify(`这一条没配上音：${outcome.message || (outcome.status === 'busy' ? '编辑器一直在忙' : '编辑器里找不到这条字幕')}`, 'error');
+        // A failed line is the engine's answer for that line; anything else will not get better by going on.
+        if (outcome.status !== 'failed') break;
+      }
+      notify(`配好了 ${spoken}/${captionIds.length} 条`, spoken === captionIds.length ? 'success' : 'error');
+    } catch (error) {
+      if (error instanceof TimelineConflictError) this.applyState(error.current);
+      notify(`没有放进去：${message(error)}`, 'error');
+      throw error;
+    }
+  }
+
+  /** Ask the editor to speak a caption, again while it has not imported it yet or is speaking another. */
+  private async speak(captionId: string): Promise<VideoEditorVoiceOutcome> {
+    for (let attempt = 0; attempt < VOICE_ATTEMPTS; attempt += 1) {
+      const editor = this.editor;
+      if (!editor?.generateVoiceover) return { status: 'missing' };
+      const outcome = await editor.generateVoiceover(captionId);
+      if (outcome.status !== 'missing' && outcome.status !== 'busy') return outcome;
+      await new Promise(resolve => setTimeout(resolve, VOICE_RETRY_MS));
+    }
+    return { status: 'busy' };
   }
 
   dispose(): void {

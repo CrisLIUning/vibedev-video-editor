@@ -101,6 +101,18 @@ async function main(): Promise<void> {
       })),
       place: (nodeId, track) => session.placeBoardMedia(nodeId, track, notify),
     },
+    scripts: {
+      label: '剧本',
+      hint: '剧本标签里的对白、分镜画布上的文字，按镜头顺序一行放成一条字幕',
+      labels: { captions: '放成字幕', voice: '字幕并配音', empty: '还没有能放的剧本：在剧本标签里写对白，或在分镜画布上写文字节点', lines: '行' },
+      list: async () => (await api.listScripts()).map(script => ({
+        id: script.id,
+        title: `${script.source === 'story' ? '剧本' : '画布'} · ${script.title}`,
+        lineCount: script.lineCount,
+        preview: script.preview,
+      })),
+      place: (scriptId, mode) => session.placeScript(scriptId, mode, notify),
+    },
     versions: {
       label: '候选版本',
       hint: '分镜画布上还有哪些素材能填选中的这一格',
