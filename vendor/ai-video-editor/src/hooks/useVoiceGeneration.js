@@ -7,6 +7,7 @@ import {
   applyVoiceOutputGain, cancelOpenVoiceTasks, convertVoiceBlob, extractVoiceEmbedding, OPENVOICE_EMBEDDING_VERSION,
 } from "../lib/openVoiceRuntime.js";
 import { synthesizeBaseVoice } from "../lib/baseVoiceSynthesis.js";
+import { KOKORO_VOICES_ENABLED } from "../config/vibedevFeatures.js";
 import { cancelHojoVoiceGeneration } from "../lib/hojoTtsRuntime.js";
 import { startVoiceGenerationCapability } from "../lib/voiceGenerationCapability.js";
 import { decodeWaveform } from "../lib/media.js";
@@ -173,7 +174,8 @@ export function useVoiceGeneration(d) {
       console.error(error);
       const message = error instanceof TtsInputError ? d.t(error.code)
         : /^HOJO_(?:DECODER_)?(?:SILENT|INVALID)_WAVEFORM$/.test(error?.message) ? d.t("ttsErrorSilentWaveform")
-        : d.selectedVoice.engine === "piper" && isPiperSymbolError(error) ? d.t("ttsErrorUnsupportedPiperSymbols")
+        // FORK: without English voices the hint does not offer switching to one (vibedevFeatures.js).
+        : d.selectedVoice.engine === "piper" && isPiperSymbolError(error) ? d.t(KOKORO_VOICES_ENABLED ? "ttsErrorUnsupportedPiperSymbols" : "ttsErrorUnsupportedPiperSymbolsChineseOnly")
           : isStorageQuotaError(error) ? d.t("ttsErrorStorageQuota")
             : isModelDownloadError(error) ? d.t("ttsErrorModelDownload")
               : error instanceof Error ? error.message : d.t("ttsErrorGenerationFailed");

@@ -1,5 +1,6 @@
 import { assertClassicMediaPipeLoader } from './build/mediapipe-loader.ts';
 import { whisperOrtAliases } from './build/whisper-ort-alias.ts';
+import { ESPEAK_PIPER_VOICES_ENABLED, KOKORO_VOICES_ENABLED } from '../../vendor/ai-video-editor/src/config/vibedevFeatures.js';
 import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,19 @@ const editorBase = assertEditorBase(process.env.VIDEO_EDITOR_BASE || DEFAULT_EDI
 const editorOutputRoot = process.env.VIDEO_EDITOR_OUT_DIR
   ? path.resolve(process.env.VIDEO_EDITOR_OUT_DIR)
   : path.join(packageRoot, 'dist', 'editor');
+// Preview cards of the voices VibeDev's builds leave out because their speech
+// front end is eSpeak NG, GPL-3.0-or-later (vendor src/config/vibedevFeatures.js).
+const hiddenVoicePreviewIds = [
+  ...(KOKORO_VOICES_ENABLED ? [] : ['af_heart', 'am_fenrir']),
+  ...(ESPEAK_PIPER_VOICES_ENABLED ? [] : [
+    'de_DE-thorsten-medium', 'es_ES-davefx-medium', 'fr_FR-siwis-medium', 'it_IT-riccardo-x_low', 'pt_BR-faber-medium',
+  ]),
+];
 const excludedPublicAssets = [
+  ...hiddenVoicePreviewIds.flatMap((voiceId) => [
+    `assets/voice-samples/${voiceId}.mp3`,
+    `assets/voice-avatars/${voiceId}.webp`,
+  ]),
   'assets/voice-samples/ko_KR-mms-medium.mp3',
   'assets/voice-samples/vi_VN-mms-medium.mp3',
   'assets/voice-samples/ru_RU-mms-medium.mp3',

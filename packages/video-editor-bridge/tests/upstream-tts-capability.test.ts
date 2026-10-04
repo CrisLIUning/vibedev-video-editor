@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { startVoiceGenerationCapability } from '../../../vendor/ai-video-editor/src/lib/voiceGenerationCapability.js';
 import { configureKokoroHostModelFiles } from '../../../vendor/ai-video-editor/src/lib/kokoroVoiceRuntime.js';
+import { ESPEAK_PIPER_VOICES_ENABLED, KOKORO_VOICES_ENABLED } from '../../../vendor/ai-video-editor/src/config/vibedevFeatures.js';
 import { resolvePiperModelRoutes } from '../../../vendor/ai-video-editor/src/lib/piperVoiceRuntime.js';
 import hojoWorkerSource from '../../../vendor/ai-video-editor/src/workers/hojoTts.worker.js?raw';
 import kokoroRuntimeSource from '../../../vendor/ai-video-editor/src/lib/kokoroVoiceRuntime.js?raw';
@@ -126,7 +127,7 @@ describe('upstream TTS capability integration', () => {
       })),
     };
 
-    const session = await startVoiceGenerationCapability({
+    const start = startVoiceGenerationCapability({
       capabilityRuntime: runtime,
       voiceName: 'Heart',
       voiceId: 'af_heart',
@@ -134,13 +135,22 @@ describe('upstream TTS capability integration', () => {
       segmentCount: 1,
     });
 
-    expect(runtime.prepareModel).toHaveBeenCalledWith(expect.objectContaining({
-      modelId: 'kokoro-82m-q8-en',
-      signal: controller.signal,
-    }));
-    expect(session.modelArtifacts).toEqual({
-      'model-q8': '/api/media/video-editor-models/kokoro-82m-q8-en/artifacts/model-q8',
-    });
+    if (KOKORO_VOICES_ENABLED) {
+      const session = await start;
+      expect(runtime.prepareModel).toHaveBeenCalledWith(expect.objectContaining({
+        modelId: 'kokoro-82m-q8-en',
+        signal: controller.signal,
+      }));
+      expect(session.modelArtifacts).toEqual({
+        'model-q8': '/api/media/video-editor-models/kokoro-82m-q8-en/artifacts/model-q8',
+      });
+    } else {
+      // VibeDev's builds leave Kokoro out (vibedevFeatures.js): refused before
+      // a host task starts or a model downloads, with the editor's message.
+      await expect(start).rejects.toMatchObject({ name: 'TtsInputError', code: 'ttsErrorEnglishVoiceUnavailable' });
+      expect(runtime.start).not.toHaveBeenCalled();
+      expect(runtime.prepareModel).not.toHaveBeenCalled();
+    }
     expect(baseVoiceSource).toContain('predictKokoroVoice({ text: prepared.text, voiceId: voice.id, speed, modelArtifacts }');
     expect(kokoroRuntimeSource).toContain('Host Kokoro model is missing artifacts');
     expect(kokoroRuntimeSource).toContain('env.allowRemoteModels = false');
@@ -195,8 +205,14 @@ describe('upstream TTS capability integration', () => {
       segmentCount: 1,
     });
 
-    expect(runtime.prepareModel).toHaveBeenCalledWith(expect.objectContaining({ modelId }));
-    expect(session.modelArtifacts).toEqual({ model: '/model', config: '/config' });
+    if (ESPEAK_PIPER_VOICES_ENABLED) {
+      expect(runtime.prepareModel).toHaveBeenCalledWith(expect.objectContaining({ modelId }));
+      expect(session.modelArtifacts).toEqual({ model: '/model', config: '/config' });
+    } else {
+      // Left out of VibeDev's builds (eSpeak NG front end): no host model to download.
+      expect(runtime.prepareModel).not.toHaveBeenCalled();
+      expect(session.modelArtifacts).toBeUndefined();
+    }
   });
 
   it('routes hosted Piper fetches only to the selected verified daemon bundle', async () => {

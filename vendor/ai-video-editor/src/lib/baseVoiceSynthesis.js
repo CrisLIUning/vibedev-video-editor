@@ -2,7 +2,8 @@ import { isBuiltInPinyinVoice, predictPiperVoice } from "./piperVoiceRuntime.js"
 import { clearKokoroVoiceCacheIfStorageTight, predictKokoroVoice } from "./kokoroVoiceRuntime.js";
 import { predictHojoVoice } from "./hojoTtsRuntime.js";
 import { predictMmsVoice } from "./mmsVoiceRuntime.js";
-import { clearPiperCacheIfStorageTight, isStorageQuotaError, prepareTextForVoice } from "./ttsText.js";
+import { clearPiperCacheIfStorageTight, isStorageQuotaError, prepareTextForVoice, TtsInputError } from "./ttsText.js";
+import { ESPEAK_PIPER_VOICES_ENABLED, KOKORO_VOICES_ENABLED } from "../config/vibedevFeatures.js";
 
 const TEST_SENTENCES = Object.freeze({
   中文: "你好，这是一段中文克隆音色测试。",
@@ -18,6 +19,15 @@ const TEST_SENTENCES = Object.freeze({
   Русский: "Здравствуйте, это проверка клонированного голоса на русском языке.",
   ไทย: "สวัสดี นี่คือการทดสอบเสียงโคลนภาษาไทย",
 });
+
+// FORK: vits-web phonemizes with piper-phonemize, eSpeak NG (GPL-3.0-or-later)
+// compiled to WASM. With the flag off the throw makes the import unreachable,
+// so the bundler leaves vits-web out (vibedevFeatures.js). The built-in pinyin
+// voices never get here.
+async function loadEspeakPiperRuntime() {
+  if (!ESPEAK_PIPER_VOICES_ENABLED) throw new TtsInputError("ttsErrorVoiceUnavailable");
+  return import("@diffusionstudio/vits-web");
+}
 
 export function getVoiceCloneTestSentence(voice) {
   return TEST_SENTENCES[voice?.language] || TEST_SENTENCES.English;
@@ -38,7 +48,7 @@ export async function synthesizeBaseVoice({
   let blob;
   if (voice.engine === "piper") {
     const builtInPinyinVoice = isBuiltInPinyinVoice(voice.id);
-    const tts = builtInPinyinVoice ? null : await import("@diffusionstudio/vits-web");
+    const tts = builtInPinyinVoice ? null : await loadEspeakPiperRuntime();
     if (tts && await clearPiperCacheIfStorageTight(tts, voice.id)) notify?.(t?.("ttsNoticePiperCacheCleared") || "ttsNoticePiperCacheCleared");
     onStatus?.(voice.language === "中文" ? "ttsStatusLoadingChineseModel" : "ttsStatusPreparingModel");
     const progress = (event) => {
@@ -72,6 +82,8 @@ export async function synthesizeBaseVoice({
       if (Number.isFinite(event?.progress)) onProgress?.(event.progress);
     });
   } else {
+    // FORK: no Kokoro in VibeDev's builds (vibedevFeatures.js).
+    if (!KOKORO_VOICES_ENABLED) throw new TtsInputError("ttsErrorEnglishVoiceUnavailable");
     onStatus?.("ttsStatusLoadingKokoro");
     await clearKokoroVoiceCacheIfStorageTight();
     blob = await predictKokoroVoice({ text: prepared.text, voiceId: voice.id, speed, modelArtifacts }, (event) => {

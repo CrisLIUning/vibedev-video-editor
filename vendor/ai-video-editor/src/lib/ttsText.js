@@ -1,3 +1,5 @@
+import { KOKORO_VOICES_ENABLED } from "../config/vibedevFeatures.js";
+
 const CHINESE_SPOKEN_DIGITS = {
   0: "零",
   1: "一",
@@ -96,8 +98,10 @@ function prepareChinesePiperText(rawText) {
   const latinCount = countMatches(normalized, /[A-Za-z]/g);
   const hanCount = countMatches(normalized, /\p{Script=Han}/gu);
 
+  // FORK: these two errors tell the person to switch to an English voice;
+  // VibeDev's builds have none (vibedevFeatures.js), so they say so instead.
   if (latinCount > Math.max(14, hanCount * 0.8)) {
-    throw new TtsInputError("ttsErrorChineseVoiceEnglishText");
+    throw new TtsInputError(KOKORO_VOICES_ENABLED ? "ttsErrorChineseVoiceEnglishText" : "ttsErrorEnglishVoiceUnavailable");
   }
 
   let changed = false;
@@ -129,7 +133,7 @@ function prepareChinesePiperText(rawText) {
     .trim();
 
   if (!text) {
-    throw new TtsInputError("ttsErrorNoChineseContent");
+    throw new TtsInputError(KOKORO_VOICES_ENABLED ? "ttsErrorNoChineseContent" : "ttsErrorEnglishVoiceUnavailable");
   }
 
   return {
@@ -185,6 +189,8 @@ export function prepareTextForVoice(rawText, voice) {
   }
 
   if (voice?.engine === "kokoro") {
+    // FORK: no Kokoro in VibeDev's builds (vibedevFeatures.js).
+    if (!KOKORO_VOICES_ENABLED) throw new TtsInputError("ttsErrorEnglishVoiceUnavailable");
     return prepareKokoroText(rawText);
   }
 

@@ -18,6 +18,7 @@ import path from 'node:path';
 import { build } from 'esbuild';
 
 import { assertBuildInputs, measureBundle, readManifest, resolveNpmInvocation } from './ai-video-editor-vendor.ts';
+import { assertNoEspeakNg } from '../packages/video-editor-bridge/build/espeak-ng-markers.ts';
 
 /** Where dsh-film serves the editor (`apps/editor` under its route prefix). */
 export const DSH_EDITOR_BASE = '/api/dsh-film/apps/editor/';
@@ -124,6 +125,8 @@ async function check(): Promise<void> {
   if (ffmpeg.length > 0) throw new Error(`FFmpeg files in the bundle: ${ffmpeg.join(', ')}`);
   const weights = files.filter(file => MODEL_WEIGHT_EXTENSIONS.has(path.extname(file).toLowerCase()));
   if (weights.length > 0) throw new Error(`model weights in the bundle: ${weights.join(', ')}`);
+  // eSpeak NG (GPL-3.0-or-later) through kokoro-js or vits-web; every file, binary ones too.
+  await assertNoEspeakNg(outputRoot, 'dist-dsh');
   // Studio's base baked in anywhere would point the editor at a path dsh-film does not serve.
   for (const file of files.filter(name => TEXT_EXTENSIONS.has(path.extname(name).toLowerCase()))) {
     const text = await readFile(path.join(outputRoot, file), 'utf8');

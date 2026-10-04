@@ -1,4 +1,6 @@
 import { withHostIdentity } from "./hostAuthorizedMedia.js";
+import { TtsInputError } from "./ttsText.js";
+import { ESPEAK_PIPER_VOICES_ENABLED, KOKORO_VOICES_ENABLED } from "../config/vibedevFeatures.js";
 function createRequestId() {
   return globalThis.crypto?.randomUUID?.() ?? `tts-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -41,18 +43,20 @@ export function voiceClipTitle(script, voiceName, index, total) {
   return `${excerpt} · ${voiceName}`;
 }
 
+// FORK: a voice VibeDev's builds leave out (vibedevFeatures.js) has no host
+// model to prepare, so the host never downloads one for it.
 const HOST_VOICE_MODELS = Object.freeze({
   hojo: "hojo-tts-light-80m-zh",
-  kokoro: "kokoro-82m-q8-en",
+  ...(KOKORO_VOICES_ENABLED ? { kokoro: "kokoro-82m-q8-en" } : {}),
 });
 
-const HOST_VOICE_MODELS_BY_VOICE = Object.freeze({
+const HOST_VOICE_MODELS_BY_VOICE = Object.freeze(ESPEAK_PIPER_VOICES_ENABLED ? {
   "de_DE-thorsten-medium": "piper-de-thorsten-medium",
   "es_ES-davefx-medium": "piper-es-davefx-medium",
   "fr_FR-siwis-medium": "piper-fr-siwis-medium",
   "it_IT-riccardo-x_low": "piper-it-riccardo-x-low",
   "pt_BR-faber-medium": "piper-pt-faber-medium",
-});
+} : {});
 
 export async function startVoiceGenerationCapability({
   capabilityRuntime,
@@ -62,6 +66,9 @@ export async function startVoiceGenerationCapability({
   voiceEngine,
   segmentCount,
 }) {
+  // FORK: refuse Kokoro before a host task starts; the editor shows the
+  // TtsInputError's message (vibedevFeatures.js).
+  if (voiceEngine === "kokoro" && !KOKORO_VOICES_ENABLED) throw new TtsInputError("ttsErrorEnglishVoiceUnavailable");
   const displayVoice = effectiveVoiceName(voiceName, voiceProfileName);
   if (!capabilityRuntime) {
     return {

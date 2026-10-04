@@ -8,6 +8,7 @@ import {
   readManifest,
   resolveNpmInvocation,
 } from './ai-video-editor-vendor.ts';
+import { assertNoEspeakNg } from '../packages/video-editor-bridge/build/espeak-ng-markers.ts';
 
 const excludedVoicePreviewAssets = [
   'assets/voice-samples/ko_KR-mms-medium.mp3',
@@ -106,6 +107,7 @@ async function main(): Promise<void> {
   if (bundledModelWeights.length > 0) {
     throw new Error(`embedded editor bundle unexpectedly contains model weight: ${bundledModelWeights.join(', ')}`);
   }
+  await assertNoEspeakNg(outputRoot, 'embedded editor bundle');
   const measurement = await measureBundle(outputRoot);
   if (measurement.totalBytes === 0 || measurement.categories.wasm === 0) {
     throw new Error('embedded editor bundle is missing required runtime assets');

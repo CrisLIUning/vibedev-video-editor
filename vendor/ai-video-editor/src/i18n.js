@@ -2014,6 +2014,10 @@ export const UI_COPY = {
     ttsErrorNoEnglishContent: "当前英文语音没有可朗读的英文内容，请输入英文或切换中文声音。",
     ttsErrorEmptyScript: "请输入要生成的文案。",
     ttsErrorVoiceMismatch: "当前文案不适合所选语音。",
+    // FORK: VibeDev's builds have no English AI voice (src/config/vibedevFeatures.js).
+    ttsErrorEnglishVoiceUnavailable: "此版本不提供英文 AI 配音，请输入中文文案。",
+    ttsErrorVoiceUnavailable: "此版本不提供这个声音，请在声音列表里另选一个。",
+    ttsErrorUnsupportedPiperSymbolsChineseOnly: "当前中文语音模型不支持这段文案里的部分字符，请清理英文/特殊符号。",
     ttsStatusPreparingModel: "准备本地模型",
     ttsStatusLoadingChineseModel: "下载或读取中文 ONNX 模型",
     ttsStatusClearingCache: "模型缓存空间不足，正在清理后重试",
@@ -2440,6 +2444,10 @@ export const UI_COPY = {
     ttsErrorNoEnglishContent: "No readable English content remains. Enter English text or switch to a Chinese voice.",
     ttsErrorEmptyScript: "Enter a script to generate voiceover.",
     ttsErrorVoiceMismatch: "The script is not suitable for the selected voice.",
+    // FORK: VibeDev's builds have no English AI voice (src/config/vibedevFeatures.js).
+    ttsErrorEnglishVoiceUnavailable: "English AI voice is not available in this build. Please enter Chinese text.",
+    ttsErrorVoiceUnavailable: "This voice is not available in this build. Choose another one from the voice list.",
+    ttsErrorUnsupportedPiperSymbolsChineseOnly: "The Chinese voice model does not support some characters in this script. Remove English or special symbols.",
     ttsStatusPreparingModel: "Preparing local model",
     ttsStatusLoadingChineseModel: "Downloading or loading the Chinese ONNX model",
     ttsStatusClearingCache: "Model cache is full · clearing it before retrying",

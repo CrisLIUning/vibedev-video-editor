@@ -132,6 +132,12 @@ LGPL-2.1-or-later FFmpeg/LibAV configuration documented in
 [`src/vendor/libav-timeline-compat/BUILD.md`](src/vendor/libav-timeline-compat/BUILD.md).
 The root MIT License does not replace dependency or codec obligations.
 
+VibeDev fork: eSpeak NG (GPL-3.0-or-later), which `kokoro-js` carries through
+`phonemizer` and `@diffusionstudio/vits-web` through piper-phonemize, is not
+shipped. The Kokoro voices and the eSpeak-based Piper voices are switched off in
+[`src/config/vibedevFeatures.js`](src/config/vibedevFeatures.js), and the build
+fails if eSpeak NG reaches the bundle; see `UPSTREAM.md`.
+
 ## Maintainer checklist
 
 When adding or updating a model or remote asset:

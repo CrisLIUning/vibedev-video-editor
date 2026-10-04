@@ -1,5 +1,7 @@
 import { loadVoiceModelFromMirrors, voiceModelFileUrls } from "../config/voiceModels.js";
+import { KOKORO_VOICES_ENABLED } from "../config/vibedevFeatures.js";
 import { orderModelUrlsForNetwork, resolveHostModelFile } from "./modelSources.js";
+import { TtsInputError } from "./ttsText.js";
 import { prepareVoiceModelStorage } from "./voiceModelStorage.js";
 
 const SHARED_MODEL_CACHE = "timeline-studio-model-cache-v5";
@@ -82,6 +84,10 @@ async function removeLegacyFp32Cache() {
 }
 
 async function loadRuntime(onProgress, modelArtifacts) {
+  // FORK: kokoro-js brings eSpeak NG (GPL-3.0-or-later) through phonemizer.
+  // With the flag off this throw makes the kokoro-js import below
+  // unreachable, so the bundler leaves kokoro-js out (vibedevFeatures.js).
+  if (!KOKORO_VOICES_ENABLED) throw new TtsInputError("ttsErrorEnglishVoiceUnavailable");
   const nextModelKey = modelKey(modelArtifacts);
   if (runtimePromise && activeModelKey !== nextModelKey) runtimePromise = undefined;
   if (!runtimePromise) {
