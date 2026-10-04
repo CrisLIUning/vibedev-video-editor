@@ -30,6 +30,7 @@ export const MATERIAL_DIR = 'canvas/media';
 
 export interface RuntimeHost {
   uploadFile(path: string, blob: Blob, options: { unique?: boolean }): Promise<UploadedFile>;
+  /** Bring a workspace media file into the film by its workspace-relative path. */
   importWorkspaceFile(path: string): Promise<UploadedFile>;
   executeCommands(body: CommandPlanBody): Promise<unknown>;
   projectRawUrl(path: string): string;
@@ -174,13 +175,19 @@ export function createCapabilityRuntime(host: RuntimeHost): VideoEditorCapabilit
     },
 
     async pinProjectFile(request) {
-      const path = request.path.trim().replaceAll('\\', '/');
-      if (request.projectFileId.trim() === '' || path === '') throw new Error('project file identity is required');
+      // The workspace-relative path as the listing gave it — nested folders,
+      // CJK, spaces — only with `/` separators.
+      const path = request.path.replaceAll('\\', '/');
+      if (request.projectFileId.trim() === '' || path.trim() === '') throw new Error('project file identity is required');
       return once(`project-file:${request.projectFileId}`, async () => {
-        // The workspace's media/ folder is outside the film: the file is
-        // copied in on first use, so the film keeps everything its cut plays.
+        // A workspace file is outside the film: it is brought in on first
+        // use, so the film keeps everything its cut plays.
         const file = await host.importWorkspaceFile(path);
-        await notifyAssets();
+        // The library is re-read only after the editor has put this identity
+        // on the file's card. Re-read first, the listing no longer offers the
+        // workspace file, its card is dropped, and the identity then lands
+        // on nothing while the film's copy is dropped as its duplicate.
+        setTimeout(() => { void notifyAssets(); }, 0);
         return assetOf(file, request.kind, request.name.trim() || path.split('/').pop() || path);
       });
     },

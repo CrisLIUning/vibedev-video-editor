@@ -31,8 +31,9 @@ import type {
 import { HOST_PROJECT_ASPECTS } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { createEmptyTimelineArchive } from '../../packages/video-editor-bridge/src/empty-archive.ts';
 import { HostRequestError, TimelineConflictError } from './api.ts';
-import type { PlacedClip, RenderBody, RenderCheck, RenderedFile, SoundPlaced, TaskSnapshot, TimelineState, UploadedFile } from './api.ts';
+import type { Material, PlacedClip, RenderBody, RenderCheck, RenderedFile, SoundPlaced, TaskSnapshot, TimelineState, UploadedFile } from './api.ts';
 import { describeRefusal } from './refusals.ts';
+import { CANVAS_FILE } from './runtime.ts';
 
 /** What the session needs from the plugin. */
 export interface SessionApi {
@@ -40,7 +41,9 @@ export interface SessionApi {
   saveTimeline(document: unknown, baseRevision: number): Promise<TimelineState>;
   undoTimeline(baseRevision: number): Promise<TimelineState>;
   redoTimeline(baseRevision: number): Promise<TimelineState>;
-  getMaterial(): Promise<{ assets: VideoEditorAuthorizedAsset[]; projectFiles: VideoEditorProjectFile[] }>;
+  getMaterial(): Promise<Material>;
+  /** Bring a workspace media file into the film by its workspace-relative path. */
+  importWorkspaceFile?(path: string): Promise<UploadedFile>;
   uploadFile(path: string, blob: Blob, options: { unique?: boolean }): Promise<UploadedFile>;
   /** Put a film file on the storyboard; absent, exports stay off the board. */
   landOnBoard?(body: { path: string; title?: string; durationSeconds?: number }): Promise<{ landedNodeId: string | null }>;
@@ -140,12 +143,67 @@ export function splitExportName(name: string): { base: string; extension: string
   return { base, extension: match ? match[2]!.toLowerCase() : 'bin' };
 }
 
+/** The film project's folder in the workspace; its files are the material's `assets`. */
+export const FILM_DIR = 'film';
+
+/** Said once when the plugin lists only part of the workspace's media. */
+export const TRUNCATED_MATERIAL_NOTICE = '工作区里的媒体文件太多，素材库只列出了最近改过的一部分';
+
+/** A workspace file this page brought into the film: where the copy went, and the file as it was then. */
+export interface ImportRecord {
+  /** The copy, relative to `film/`. */
+  filmPath: string;
+  sizeBytes?: number;
+  mtime?: number;
+}
+
+/**
+ * The workspace files the library should offer. The plugin already leaves out
+ * what was imported and has not changed since; this is the same rule by path,
+ * for what this page imported (a listing read before the plugin noticed the
+ * import still offers it), and it never offers a file inside `film/`, which
+ * is one of the film's own assets already. Either way the library would show
+ * one file as two cards: the workspace file and its copy in the film.
+ */
+export function visibleProjectFiles(
+  assets: readonly VideoEditorAuthorizedAsset[],
+  files: readonly VideoEditorProjectFile[],
+  imports: ReadonlyMap<string, ImportRecord>,
+): VideoEditorProjectFile[] {
+  const filmFiles = new Set(assets.flatMap(asset => [asset.assetId, asset.versionId]));
+  return files.filter((file) => {
+    if (file.path.startsWith(`${FILM_DIR}/`)) return false;
+    const record = imports.get(file.path);
+    if (record === undefined || !filmFiles.has(`${CANVAS_FILE}${record.filmPath}`)) return true;
+    // A file changed since its import is new material, offered again.
+    const sameSize = record.sizeBytes === undefined || file.sizeBytes === undefined || file.sizeBytes === record.sizeBytes;
+    const sameTime = record.mtime === undefined || file.mtime === undefined || file.mtime === record.mtime;
+    return !(sameSize && sameTime);
+  });
+}
+
+/** Whether two material listings would show the editor the same library. */
+const sameMaterial = (left: Pick<Material, 'assets' | 'projectFiles'>, right: Pick<Material, 'assets' | 'projectFiles'>): boolean =>
+  JSON.stringify(left.assets) === JSON.stringify(right.assets) && JSON.stringify(left.projectFiles) === JSON.stringify(right.projectFiles);
+
+/** A change of the film project the plugin announced (`project-changed`). */
+export interface ProjectChange {
+  title?: string;
+  aspect?: string;
+}
+
 export class TimelineSession {
   revision = 0;
   document: unknown = null;
   assets: VideoEditorAuthorizedAsset[] = [];
   projectFiles: VideoEditorProjectFile[] = [];
+  /** Whether the plugin listed only part of the workspace's media. */
+  materialTruncated = false;
 
+  private title: string;
+  private aspect: string | undefined;
+  private readonly imports = new Map<string, ImportRecord>();
+  private truncationShown = false;
   private editor: MountedVideoEditor | null = null;
   private pending: JsonObject | null = null;
   private saving: Promise<void> | null = null;
@@ -158,11 +216,14 @@ export class TimelineSession {
   private disposed = false;
   private rendering = false;
 
-  constructor(private readonly options: SessionOptions) {}
+  constructor(private readonly options: SessionOptions) {
+    this.title = options.title;
+    this.aspect = options.aspect;
+  }
 
   /** The document the editor is given: the saved cut, or an empty one. */
   envelope(): VideoEditorDocumentEnvelope {
-    const aspect = isAspect(this.options.aspect) ? this.options.aspect : undefined;
+    const aspect = isAspect(this.aspect) ? this.aspect : undefined;
     return {
       schemaVersion: 1,
       projectId: this.options.projectId,
@@ -170,7 +231,7 @@ export class TimelineSession {
       // board has neither a production nor a composite, so it is both.
       productionId: this.options.boardId,
       compositeId: this.options.boardId,
-      projectTitle: this.options.title,
+      projectTitle: this.title,
       ...(aspect ? { projectAspect: aspect } : {}),
       revision: this.revision,
       documentVersionId: `canvas:${this.options.boardId}:${this.revision}`,
@@ -206,23 +267,86 @@ export class TimelineSession {
     this.publish();
   }
 
-  /** Re-read the film's material (after a file was added somewhere). */
+  /**
+   * Re-read the film's material (after a file was added somewhere, or when
+   * the page comes back into view) and show the editor what changed. While
+   * an edit is being saved the library waits for the save: publishing now
+   * would hand the editor the cut as last saved, under the edit in flight.
+   */
   async refreshMaterial(publish = true): Promise<void> {
+    let material: Material;
     try {
-      const material = await this.options.api.getMaterial();
-      this.assets = material.assets;
-      this.projectFiles = material.projectFiles;
+      material = await this.options.api.getMaterial();
     } catch {
       // An unreadable listing is a smaller library, not a broken desk: the cut
       // still opens and plays what it already has.
       return;
     }
-    if (publish) this.publish();
+    const next = { assets: material.assets, projectFiles: visibleProjectFiles(material.assets, material.projectFiles, this.imports) };
+    const changed = !sameMaterial(next, this);
+    this.assets = next.assets;
+    this.projectFiles = next.projectFiles;
+    this.materialTruncated = material.truncated === true;
+    if (!this.materialTruncated) this.truncationShown = false;
+    this.showTruncation();
+    if (!publish || !changed || this.disposed) return;
+    // The save's own answer publishes the new library; a refresh follows it.
+    if (this.busy) this.requestExternalRefresh();
+    else this.publish();
+  }
+
+  /** Say once, through the editor's toast, that the library holds only part of the workspace. */
+  private showTruncation(): void {
+    if (!this.materialTruncated || this.truncationShown || this.editor === null || this.disposed) return;
+    this.truncationShown = true;
+    this.options.notify?.(TRUNCATED_MATERIAL_NOTICE, 'info');
+  }
+
+  /**
+   * Bring a workspace file into the film for the editor (a project file's
+   * first use) and remember it, so the listing stops offering it beside its
+   * copy in the film.
+   */
+  async importWorkspaceFile(path: string): Promise<UploadedFile> {
+    const importFile = this.options.api.importWorkspaceFile;
+    if (!importFile) throw new Error('剪辑台不能导入工作区文件');
+    const listed = this.projectFiles.find(file => file.path === path);
+    const file = await importFile(path);
+    // A file inside `film/` is answered as itself: nothing was copied.
+    if (`${FILM_DIR}/${file.name}` !== path) {
+      this.imports.set(path, {
+        filmPath: file.name,
+        sizeBytes: listed?.sizeBytes ?? file.size,
+        ...(listed?.mtime !== undefined ? { mtime: listed.mtime } : {}),
+      });
+    }
+    return file;
+  }
+
+  /**
+   * The film was renamed or given another aspect (`project-changed`): the
+   * editor shows the new title, and takes the new aspect when it can draw it
+   * (the bridge adopts a ratio only when the host changes it). Waits while
+   * an edit is being saved, as a material refresh does.
+   */
+  setProject(change: ProjectChange): void {
+    const title = change.title ?? this.title;
+    const aspect = change.aspect ?? this.aspect;
+    if (title === this.title && aspect === this.aspect) return;
+    this.title = title;
+    this.aspect = aspect;
+    if (this.busy) this.requestExternalRefresh();
+    else this.publish();
   }
 
   /** The editor's events. History handlers return a promise the editor waits for. */
   handleEvent(event: VideoEditorHostEvent): void | Promise<void> {
     switch (event.type) {
+      case 'ready':
+        // The editor's toast works once its first import is done; a notice
+        // from the listing it was mounted with is said then.
+        this.showTruncation();
+        return undefined;
       case 'dirty':
         this.editEpoch += 1;
         this.dirty = true;

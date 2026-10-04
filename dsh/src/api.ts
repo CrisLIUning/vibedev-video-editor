@@ -151,9 +151,27 @@ export const redoTimeline = (baseRevision: number): Promise<TimelineState> =>
 export const executeCommands = async (body: CommandPlanBody): Promise<CommandResult> =>
   (await studio<{ result: CommandResult }>(`/api/canvas/timelines/${board}/commands${projectQuery}`, '放到时间线', { method: 'POST', json: body })).result;
 
-export const getMaterial = (signal?: AbortSignal): Promise<{ assets: VideoEditorAuthorizedAsset[]; projectFiles: VideoEditorProjectFile[] }> =>
+/**
+ * What the editor's library may show: the film's own files (`assets`, which
+ * also authorize what the cut plays) and the workspace's media outside
+ * `film/` (`projectFiles`, imported on first use). `truncated` says the
+ * workspace had more media than the plugin lists.
+ */
+export interface Material {
+  assets: VideoEditorAuthorizedAsset[];
+  projectFiles: VideoEditorProjectFile[];
+  truncated?: boolean;
+}
+
+export const getMaterial = (signal?: AbortSignal): Promise<Material> =>
   studio(`/api/canvas/timelines/${board}/material${projectQuery}`, '读取素材', signal ? { signal } : {});
 
+/**
+ * Bring a workspace media file into the film by its workspace-relative path,
+ * exactly as the listing gave it (nested folders and any characters); the
+ * answer names the film's copy, or the file itself when it is already in
+ * `film/`.
+ */
 export const importWorkspaceFile = async (path: string): Promise<UploadedFile> =>
   (await studio<{ file: UploadedFile }>(`/api/canvas/timelines/${board}/import${projectQuery}`, '导入素材', { method: 'POST', json: { path } })).file;
 

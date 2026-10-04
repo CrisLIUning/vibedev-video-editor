@@ -20,6 +20,7 @@ import { installHostAdapter, projectId, toHostUrl, workspace } from './address.t
 import { createCaptionFlow } from './captions.ts';
 import { createConsentPrompt } from './consent.ts';
 import { createModelAccess } from './models.ts';
+import { syncPage } from './page-events.ts';
 import { createCapabilityRuntime } from './runtime.ts';
 import { TimelineSession } from './session.ts';
 import type { NoticeTone } from './session.ts';
@@ -63,7 +64,9 @@ async function main(): Promise<void> {
   if (workspace === '') throw new Error('页面地址里没有工作区');
   const project = await api.getProject();
   if (project === null) {
-    showStatus('这个工作区还没有影视项目，请先在“开始”页新建。');
+    // The film is made for the workspace automatically; a tab opened before
+    // that finished has nothing to edit until it is opened again.
+    showStatus('这个工作区的影视项目还没建好（它会自动创建），请关掉剪辑台标签再重新打开。');
     return;
   }
   let editor: MountedVideoEditor | null = null;
@@ -108,7 +111,8 @@ async function main(): Promise<void> {
   });
   const runtime = Object.assign(createCapabilityRuntime({
     uploadFile: api.uploadFile,
-    importWorkspaceFile: api.importWorkspaceFile,
+    // Through the session, which remembers what came in so the library stops offering it twice.
+    importWorkspaceFile: path => session.importWorkspaceFile(path),
     executeCommands: api.executeCommands,
     projectRawUrl: api.projectRawUrl,
     prepareTimeline: () => session.prepareTimeline(),
@@ -203,11 +207,13 @@ async function main(): Promise<void> {
   session.attach(editor);
   showStatus(null);
 
-  // The film changing on disk — an agent's edit, a generation landing — refreshes the cut and the material.
+  // The film changing on disk — an agent's edit, a generation landing — refreshes the cut and the material;
+  // a renamed or reshaped film reaches the editor; the page coming back into view re-reads the material.
   const events = new EventSource(toHostUrl(`/api/projects/${encodeURIComponent(project.id || projectId)}/events`));
-  events.addEventListener('file-changed', () => { session.requestExternalRefresh(); });
+  const stopSync = syncPage({ events, session, projectId: project.id || projectId });
 
   window.addEventListener('pagehide', () => {
+    stopSync();
     events.close();
     runtime.dispose();
     // Leaving only stops listening: recognitions go on in the plugin.

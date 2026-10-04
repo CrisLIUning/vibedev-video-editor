@@ -62,6 +62,26 @@ describe('capability runtime', () => {
     expect(asset).toMatchObject({ versionId: 'canvas-file:canvas/media/take.mp4', kind: 'video' });
   });
 
+  it('imports a file from anywhere in the workspace by its path as listed, only with / separators', async () => {
+    const imported: string[] = [];
+    const { host } = fakeHost({ importWorkspaceFile: async (path) => { imported.push(path); return { name: 'canvas/media/镜头 01.mp4', size: 3, mime: 'video/mp4' }; } });
+    const runtime = createCapabilityRuntime(host);
+    const asset = await runtime.pinProjectFile!({ localAssetId: 'x', projectFileId: 'workspace: 素材/第一场/镜头 01.mp4', path: ' 素材\\第一场\\镜头 01.mp4', kind: 'video', name: '' });
+    expect(imported).toEqual([' 素材/第一场/镜头 01.mp4']);
+    expect(asset).toMatchObject({ versionId: 'canvas-file:canvas/media/镜头 01.mp4', name: '镜头 01.mp4' });
+    await expect(runtime.pinProjectFile!({ localAssetId: 'y', projectFileId: 'p', path: '  ', kind: 'video', name: '' })).rejects.toThrow('identity');
+  });
+
+  it('lets the editor put the identity on the card before the library is re-read', async () => {
+    const order: string[] = [];
+    const { host } = fakeHost({ onAssetsChanged: vi.fn(async () => { order.push('library re-read'); }) });
+    const runtime = createCapabilityRuntime(host);
+    await runtime.pinProjectFile!({ localAssetId: 'x', projectFileId: 'workspace:shots/a.mp4', path: 'shots/a.mp4', kind: 'video', name: 'a.mp4' });
+    order.push('identity on the card');
+    await vi.waitFor(() => expect(host.onAssetsChanged).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(['identity on the card', 'library re-read']);
+  });
+
   it('saves generated files and places them through one command plan', async () => {
     const { host, uploads, commands } = fakeHost();
     const runtime = createCapabilityRuntime(host);
