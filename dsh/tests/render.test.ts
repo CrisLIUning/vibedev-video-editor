@@ -206,6 +206,9 @@ describe('rendering into the project', () => {
   it('reads the panel\'s settings and the render\'s progress lines', () => {
     expect(renderRequestOf({ resolution: '4k', frameRate: 25 })).toEqual({ frameRate: 30, resolution: '720' });
     expect(renderRequestOf({ resolution: '2160', frameRate: 60, fileName: '  ' })).toEqual({ frameRate: 60, resolution: '2160' });
+    // The panel's untouched default is no name: the plugin names the file after the film.
+    expect(renderRequestOf({ resolution: '720', frameRate: 30, fileName: 'ai-voiceover' })).toEqual({ frameRate: 30, resolution: '720' });
+    expect(renderRequestOf({ resolution: '720', frameRate: 30, fileName: '雨夜成片' })).toEqual({ frameRate: 30, resolution: '720', fileName: '雨夜成片' });
     expect(percentOf(['准备渲染', 'render 12% · 1.2s / 10.0s', '其他'], 0)).toBe(12);
     expect(percentOf([], 7)).toBe(7);
   });

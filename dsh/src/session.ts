@@ -101,6 +101,9 @@ export function percentOf(progress: readonly string[], fallback: number): number
   return fallback;
 }
 
+/** The export panel's default file name (Timeline Studio's `DEFAULT_EXPORT_SETTINGS.fileName`). */
+const UPSTREAM_DEFAULT_FILE_NAME = 'ai-voiceover';
+
 /**
  * The export panel's settings in the shapes the plugin takes. The panel offers
  * what the plugin renders, so anything else falls back to the defaults.
@@ -109,7 +112,9 @@ export function renderRequestOf(settings: VideoEditorRenderRequestSettings): Ren
   const frameRate = RENDER_FRAME_RATES.includes(settings.frameRate) ? settings.frameRate as 24 | 30 | 60 : 30;
   const resolution = RENDER_RESOLUTIONS.includes(settings.resolution) ? settings.resolution as '720' | '1080' | '1440' | '2160' : '720';
   const fileName = settings.fileName?.trim();
-  return { frameRate, resolution, ...(fileName ? { fileName } : {}) };
+  // The upstream panel's default name says nothing about this film: without a name of their own the plugin names the file after the film.
+  const chosen = fileName && fileName !== UPSTREAM_DEFAULT_FILE_NAME ? fileName : undefined;
+  return { frameRate, resolution, ...(chosen ? { fileName: chosen } : {}) };
 }
 
 /** The renderer download a `FFMPEG_UNAVAILABLE` refusal offers, when it offers one. */
