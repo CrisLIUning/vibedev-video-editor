@@ -91,6 +91,8 @@ const RENDER_RESOLUTIONS: readonly string[] = ['720', '1080', '1440', '2160'];
 const PROGRESS_MARKS = [25, 50, 75];
 /** How long one long-poll step of a render may wait. */
 const RENDER_WAIT_MS = 25_000;
+/** How long to wait before asking again after a long-poll step failed; the render goes on meanwhile. */
+const RENDER_WAIT_RETRY_MS = [1_000, 3_000, 9_000];
 
 /** The render's percentage from its progress lines (`render N% · …`), or `fallback`. */
 export function percentOf(progress: readonly string[], fallback: number): number {
@@ -553,9 +555,28 @@ export class TimelineSession {
       }
       let since = 0;
       let percent = 0;
+      let failedWaits = 0;
       const announced = new Set<number>();
       for (;;) {
-        const snapshot = await waitTask(taskId, since, RENDER_WAIT_MS);
+        let snapshot: TaskSnapshot<RenderedFile>;
+        try {
+          snapshot = await waitTask(taskId, since, RENDER_WAIT_MS);
+          failedWaits = 0;
+        } catch (error) {
+          // A task the plugin does not know is an answer; anything else is
+          // this page losing sight of a render that goes on without it.
+          if (error instanceof HostRequestError && error.status === 404) throw error;
+          if (this.disposed) return;
+          const delay = RENDER_WAIT_RETRY_MS[failedWaits];
+          failedWaits += 1;
+          if (delay === undefined) {
+            say(`暂时看不到渲染进度了，但渲染仍在后台进行；完成后文件会存入 film/${RENDER_DIR}/ 并出现在分镜画布上`);
+            return;
+          }
+          await new Promise(resolve => setTimeout(resolve, delay));
+          if (this.disposed) return;
+          continue;
+        }
         if (this.disposed) return;
         since = snapshot.nextSince;
         percent = percentOf(snapshot.progress, percent);

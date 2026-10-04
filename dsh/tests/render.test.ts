@@ -171,6 +171,53 @@ describe('rendering into the project', () => {
     expect(notify).toHaveBeenCalledWith('已经有一次渲染在进行，接着报告它的进度', 'info');
   });
 
+  it('keeps following a render through failed long-polls, and never calls a render it cannot see failed', async () => {
+    vi.useFakeTimers();
+    try {
+      // Two failed waits, then the render is seen to the end.
+      let failures = 2;
+      const { api, waits } = fakeApi([snapshot('done', [], { file: rendered })]);
+      const wait = api.waitTask!;
+      api.waitTask = async (taskId, since, timeoutMs) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new TypeError('Failed to fetch');
+        }
+        return wait(taskId, since, timeoutMs);
+      };
+      const notify = vi.fn();
+      const session = open(api, { notify });
+      await session.load();
+      const following = session.startRender(settings);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await following;
+      expect(waits).toHaveLength(1);
+      expect(notify).toHaveBeenLastCalledWith('已存入 film/canvas/renders/雨夜.mp4，并放到了分镜画布上', 'success');
+      expect(notify.mock.calls.some(([text]) => String(text).startsWith('渲染失败'))).toBe(false);
+
+      // Never seen again: the render is still running, and its file will come.
+      const lost = fakeApi([], { waitTask: async () => { throw new TypeError('Failed to fetch'); } });
+      const told = vi.fn();
+      const other = open(lost.api, { notify: told });
+      await other.load();
+      const blind = other.startRender(settings);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await blind;
+      expect(told).toHaveBeenLastCalledWith('暂时看不到渲染进度了，但渲染仍在后台进行；完成后文件会存入 film/canvas/renders/ 并出现在分镜画布上', 'info');
+      expect(told.mock.calls.some(([text]) => String(text).startsWith('渲染失败'))).toBe(false);
+
+      // A task the plugin says it does not have is not waited for.
+      const gone = fakeApi([], { waitTask: async () => { throw new HostRequestError('task not found', 404, 'MEDIA_TASK_NOT_FOUND'); } });
+      const third = vi.fn();
+      const missing = open(gone.api, { notify: third });
+      await missing.load();
+      await missing.startRender(settings);
+      expect(third).toHaveBeenLastCalledWith('渲染失败：task not found', 'error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports a failed or cancelled render by its code, in Chinese', async () => {
     const failed = fakeApi([snapshot('failed', ['render 40% · 4.0s / 10.0s'], { error: { code: 'FFMPEG_FAILED', message: 'ffmpeg exited with code 1: Invalid data found' } })]);
     const notify = vi.fn();

@@ -7,11 +7,13 @@ import {
   createCaptionFlow,
   createEnginePrompt,
   engineDialog,
-  estimateSeconds,
-  gatewayCost,
+  estimateText,
   openCaptionReview,
 } from '../src/captions.ts';
-import type { CaptionFlowOptions, CaptionHost, ChooseEngine } from '../src/captions.ts';
+import type { CaptionFlowOptions, CaptionHost, ChooseEngine, EngineOffer } from '../src/captions.ts';
+
+const CATALOGUE_BASIS = 'catalogue price per second × source seconds; an upper bound, only speech is sent';
+const quoted = { seconds: 150, amountCny: 0.13, basis: CATALOGUE_BASIS };
 
 const engines = (overrides: Partial<{ whisper: Record<string, unknown>; gateway: Record<string, unknown> }> = {}): CaptionEngines => ({
   default: 'whisper',
@@ -52,6 +54,7 @@ function fakeHost(overrides: Partial<CaptionHost> = {}) {
   const host: CaptionHost = {
     getCaptionEngines: vi.fn(async () => engines()),
     startTranscription: vi.fn(async (body) => { calls.push(`start ${body.baseRevision}`); return { taskId: 'asr-1', status: 'running', engine: body.engine ?? 'whisper' }; }),
+    estimateTranscription: vi.fn(async (body) => { calls.push(`estimate ${body.baseRevision}`); return { estimate: quoted, engine: 'gateway' as const }; }),
     listCaptionTasks: vi.fn(async () => ({ tasks })),
     waitTask: vi.fn(async (taskId: string) => ({ taskId, status: 'done' as const, startedAt: 0, endedAt: 1, progress: [], nextSince: 0, file: { documentResult: draft } })),
     cancelTask: vi.fn(async (taskId: string) => { calls.push(`cancel ${taskId}`); return { ok: true }; }),
@@ -72,7 +75,6 @@ function flow(host: CaptionHost, calls: string[], overrides: Partial<CaptionFlow
     prepareTimeline: vi.fn(async () => { calls.push('save'); return 4; }),
     adoptTimeline: vi.fn(),
     reloadTimeline: vi.fn(async () => { calls.push('reload'); }),
-    timelineDocument: () => ({ format: 'timeline-studio-archive', version: 3, project: { visualSegments: [{ id: 'v1', duration: 90 }, { id: 'v2', duration: 30 }], audioSegments: [{ id: 'clip', duration: 12 }] } }),
     notify: vi.fn(),
     chooseEngine: vi.fn<ChooseEngine>(async offer => offer.preferred),
     doc: document,
@@ -102,17 +104,27 @@ describe('submitting a recognition', () => {
     expect(host.startTranscription).toHaveBeenCalledWith({
       engine: 'whisper', language: 'zh', clipIds: ['clip'], range: { start: 2, end: 5 }, baseRevision: 4, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
-    expect(options.chooseEngine).toHaveBeenCalledWith({ engines: engines(), preferred: 'whisper', seconds: 3 });
+    expect(options.chooseEngine).toHaveBeenCalledWith({ engines: engines(), preferred: 'whisper', estimateGateway: expect.any(Function) });
+    expect(host.estimateTranscription).not.toHaveBeenCalled();
     expect(host.applyCaptions).not.toHaveBeenCalled();
   });
 
-  it('sends the gateway Mandarin with the spending confirmed, and remembers the choice', async () => {
-    const { host, calls } = fakeHost({ startTranscription: vi.fn(async () => ({ taskId: 'asr-2', status: 'running', engine: 'gateway' as const, estimate: { seconds: 120, amountCny: 0.1, basis: 'catalog' } })) });
-    const chooseEngine = vi.fn<ChooseEngine>(async () => 'gateway');
+  it('shows the plugin\'s estimate for the same request, then sends the gateway Mandarin with the spending confirmed, and remembers the choice', async () => {
+    const { host, calls } = fakeHost();
+    vi.mocked(host.startTranscription).mockImplementation(async (body) => {
+      calls.push(`start ${body.baseRevision}`);
+      return { taskId: 'asr-2', status: 'running', engine: 'gateway' as const, estimate: { seconds: 120, amountCny: 0.1, basis: CATALOGUE_BASIS } };
+    });
+    const shown: unknown[] = [];
+    // As the dialog does: the estimate is shown before paying is offered.
+    const chooseEngine = vi.fn<ChooseEngine>(async (offer) => { shown.push(await offer.estimateGateway()); return 'gateway'; });
     const { transcribeTimeline, options, memory } = flow(host, calls, { chooseEngine });
-    await transcribeTimeline({ language: 'en', onProgress: () => {} });
-    expect(chooseEngine.mock.calls[0]![0].seconds).toBe(120);
-    expect(host.startTranscription).toHaveBeenCalledWith(expect.objectContaining({ engine: 'gateway', language: 'zh', spendingConfirmed: true }));
+    await transcribeTimeline({ clipId: 'clip', start: 2, duration: 3, language: 'en', onProgress: () => {} });
+    expect(shown).toEqual([quoted]);
+    const asked = { engine: 'gateway', language: 'zh', clipIds: ['clip'], range: { start: 2, end: 5 }, baseRevision: 4, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) };
+    expect(host.estimateTranscription).toHaveBeenCalledWith(asked);
+    expect(host.startTranscription).toHaveBeenCalledWith({ ...asked, spendingConfirmed: true });
+    expect(calls).toEqual(['save', 'estimate 4', 'save', 'start 4']);
     expect(options.ensureModelConsent).not.toHaveBeenCalled();
     expect(options.notify).toHaveBeenCalledWith('已提交网关转写，预计 ¥0.10', 'info');
     expect(memory.get('dsh-film:caption-engine')).toBe('gateway');
@@ -120,6 +132,83 @@ describe('submitting a recognition', () => {
     // Next time the remembered engine is the one preselected.
     await transcribeTimeline({ language: 'zh', onProgress: () => {} });
     expect(chooseEngine.mock.calls[1]![0].preferred).toBe('gateway');
+  });
+
+  it('submits nothing to the gateway when the estimate is refused, and says why', async () => {
+    const { host, calls } = fakeHost({
+      estimateTranscription: vi.fn(async () => { throw new HostRequestError('CAPTION_ENGINE_UNAVAILABLE: not signed in', 503, 'CAPTION_ENGINE_UNAVAILABLE', { cause: 'NOT_SIGNED_IN' }); }),
+    });
+    const { transcribeTimeline } = flow(host, calls, { chooseEngine: async () => 'gateway' });
+    await expect(transcribeTimeline({ language: 'zh', onProgress: () => {} })).rejects.toThrow('请先登录 VibeDev 账号');
+    expect(host.estimateTranscription).toHaveBeenCalledTimes(1);
+    expect(host.startTranscription).not.toHaveBeenCalled();
+
+    // A plugin that does not know estimates started a recognition: it is stopped, and nothing is confirmed.
+    const old = fakeHost({ estimateTranscription: vi.fn(async () => ({ taskId: 'asr-9', status: 'running' }) as never) });
+    await expect(flow(old.host, old.calls, { chooseEngine: async () => 'gateway' }).transcribeTimeline({ language: 'zh', onProgress: () => {} })).rejects.toThrow('没有给出网关费用估算');
+    expect(old.host.cancelTask).toHaveBeenCalledWith('asr-9');
+    expect(old.host.startTranscription).not.toHaveBeenCalled();
+
+    // A cut that moved on before the estimate: shown, and nothing is sent.
+    const moved = fakeHost({ estimateTranscription: vi.fn(async () => { throw new TimelineConflictError(state(9)); }) });
+    const stale = flow(moved.host, moved.calls, { chooseEngine: async () => 'gateway' });
+    await expect(stale.transcribeTimeline({ language: 'zh', onProgress: () => {} })).rejects.toThrow('剪辑刚被别处改过');
+    expect(stale.options.adoptTimeline).toHaveBeenCalledWith(state(9));
+    expect(moved.host.startTranscription).not.toHaveBeenCalled();
+  });
+
+  it('estimates again for a cut that moved on, and never sends the gateway more than was confirmed', async () => {
+    const answers = [quoted, { ...quoted, seconds: 140, amountCny: 0.12 }];
+    const conflictOnce = () => {
+      let attempt = 0;
+      return vi.fn(async (body: { baseRevision: number }) => {
+        attempt += 1;
+        if (attempt === 1) throw new TimelineConflictError(state(7));
+        return { taskId: `asr-${body.baseRevision}`, status: 'running' };
+      });
+    };
+    const cheaper = fakeHost({ startTranscription: conflictOnce(), estimateTranscription: vi.fn(async () => ({ estimate: answers.shift()! })) });
+    let revision = 4;
+    const moved = flow(cheaper.host, cheaper.calls, { chooseEngine: async () => 'gateway', prepareTimeline: async () => revision });
+    vi.mocked(moved.options.adoptTimeline).mockImplementation((current) => { revision = current.revision; });
+    await expect(moved.transcribeTimeline({ language: 'zh', onProgress: () => {} })).resolves.toMatchObject({ backgroundTaskId: 'asr-7' });
+    expect(vi.mocked(cheaper.host.estimateTranscription).mock.calls.map(([body]) => body.baseRevision)).toEqual([4, 7]);
+
+    const dearer = fakeHost({ startTranscription: conflictOnce(), estimateTranscription: vi.fn(async (body) => ({ estimate: body.baseRevision === 4 ? quoted : { ...quoted, seconds: 300, amountCny: 0.25 } })) });
+    revision = 4;
+    const grown = flow(dearer.host, dearer.calls, { chooseEngine: async () => 'gateway', prepareTimeline: async () => revision });
+    vi.mocked(grown.options.adoptTimeline).mockImplementation((current) => { revision = current.revision; });
+    await expect(grown.transcribeTimeline({ language: 'zh', onProgress: () => {} })).rejects.toThrow('网关费用比你确认的高');
+    expect(dearer.host.startTranscription).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the Silero consent the gateway needs before anything is sent', async () => {
+    const { host, calls } = fakeHost({
+      getCaptionEngines: vi.fn(async () => engines({ whisper: { consent: { 'whisper-small-q8': false, 'silero-vad': false } }, gateway: { consent: { 'silero-vad': false } } })),
+    });
+    const { transcribeTimeline } = flow(host, calls, { chooseEngine: async () => 'gateway' });
+    await transcribeTimeline({ language: 'zh', onProgress: () => {} });
+    expect(calls).toEqual(['save', 'estimate 4', 'consent silero-vad', 'save', 'start 4']);
+  });
+
+  it('retries once for a cut that moved on and once for a consent refusal, independently', async () => {
+    let attempt = 0;
+    const { host, calls } = fakeHost({
+      startTranscription: vi.fn(async (body) => {
+        calls.push(`start ${body.baseRevision}`);
+        attempt += 1;
+        if (attempt === 1) throw new TimelineConflictError(state(7));
+        if (attempt === 2) throw new HostRequestError('consent', 409, 'VIDEO_EDITOR_MODEL_CONSENT_REQUIRED', { modelIds: ['silero-vad'] });
+        if (attempt === 3) throw new TimelineConflictError(state(8));
+        return { taskId: 'asr-5', status: 'running' };
+      }),
+    });
+    let revision = 4;
+    const { transcribeTimeline, options } = flow(host, calls, { prepareTimeline: async () => revision });
+    vi.mocked(options.adoptTimeline).mockImplementation((current) => { revision = current.revision; });
+    // A second conflict is not retried again.
+    await expect(transcribeTimeline({ language: 'zh', onProgress: () => {} })).rejects.toThrow('剪辑刚被别处改过');
+    expect(calls.filter(call => call.startsWith('start') || call === 'consent silero-vad')).toEqual(['start 4', 'start 7', 'consent silero-vad', 'start 7']);
   });
 
   it('submits nothing when the person cancels the choice or declines a model', async () => {
@@ -229,6 +318,16 @@ describe('the background panel', () => {
     refresh();
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(vi.mocked(options.notify).mock.calls.filter(([text]) => String(text).startsWith('原声字幕草稿识别好了'))).toHaveLength(1);
+  });
+
+  it('keeps asking after a failed read, at the idle pace', async () => {
+    const { host, calls, setTasks } = fakeHost();
+    setTasks([task({ status: 'running', progress: ['20% · 正在识别'] })]);
+    vi.mocked(host.listCaptionTasks).mockRejectedValueOnce(new HostRequestError('读取字幕识别任务 (502)', 502));
+    const { panel } = flow(host, calls, { idlePollMs: 200 });
+    await vi.waitFor(() => expect(panel.textContent).toContain('读取字幕识别任务 (502)'));
+    await vi.waitFor(() => expect(panel.textContent).toContain('20% · 正在识别'));
+    expect(panel.querySelector('.caption-alert')).toBeNull();
   });
 });
 
@@ -399,18 +498,26 @@ describe('listening to a line', () => {
 });
 
 describe('the engine question', () => {
-  it('preselects the preferred engine, greys out one that cannot run, and shows the price only for the gateway', () => {
-    const offer = { engines: engines({ whisper: { available: false, reason: '需要一个打开着的 VibeDev 窗口', runner: 'none' } }), preferred: 'whisper' as const, seconds: 150 };
+  const offerOf = (overrides: Partial<EngineOffer> = {}): EngineOffer => ({ engines: engines(), preferred: 'whisper', estimateGateway: vi.fn(async () => quoted), ...overrides });
+
+  it('preselects the preferred engine, greys out one that cannot run, and shows the plugin\'s estimate only for the gateway', async () => {
+    const offer = offerOf({ engines: engines({ whisper: { available: false, reason: '需要一个打开着的 VibeDev 窗口', runner: 'none' } }) });
     const dialog = engineDialog(document, offer);
     expect(dialog.choices.get('whisper')!.disabled).toBe(true);
     expect(dialog.root.textContent).toContain('需要一个打开着的 VibeDev 窗口');
     expect(dialog.selected()).toBe('gateway');
     expect(dialog.cost.hidden).toBe(false);
-    expect(dialog.cost.textContent).toContain('最多约 2.5 分钟 × ¥0.05 ≈ ¥0.13');
+    // Paying is not offered before the estimate is shown.
+    expect(dialog.cost.textContent).toContain('正在估算网关费用');
+    expect(dialog.confirm.disabled).toBe(true);
+    await vi.waitFor(() => expect(dialog.confirm.disabled).toBe(false));
+    expect(dialog.cost.textContent).toContain('估算：最多送去转写约 2.5 分钟原声（150 秒），约 ¥0.13');
+    expect(dialog.cost.textContent).toContain('计价依据：网关价目表的单价');
     expect(dialog.cost.textContent).toContain(GATEWAY_NOTICE);
     expect(dialog.confirm.textContent).toBe('确认计费并识别');
+    expect(offer.estimateGateway).toHaveBeenCalledTimes(1);
 
-    const local = engineDialog(document, { engines: engines(), preferred: 'whisper', seconds: null });
+    const local = engineDialog(document, offerOf());
     expect(local.selected()).toBe('whisper');
     expect(local.cost.hidden).toBe(true);
     expect(local.confirm.textContent).toBe('开始识别');
@@ -420,8 +527,28 @@ describe('the engine question', () => {
     expect(local.cost.hidden).toBe(false);
   });
 
+  it('shows a refused estimate and offers no paid recognition, asking again when the gateway is chosen again', async () => {
+    const estimateGateway = vi.fn<EngineOffer['estimateGateway']>()
+      .mockRejectedValueOnce(new HostRequestError('CAPTION_ENGINE_UNAVAILABLE: not signed in', 503, 'CAPTION_ENGINE_UNAVAILABLE', { cause: 'NOT_SIGNED_IN' }))
+      .mockResolvedValueOnce({ seconds: 30, amountCny: 0.03, basis: 'retail ¥0.05 per minute × source seconds; an upper bound, only speech is sent' });
+    const dialog = engineDialog(document, offerOf({ preferred: 'gateway', estimateGateway }));
+    await vi.waitFor(() => expect(dialog.cost.textContent).toContain('估算不了网关费用，这次不能用网关转写：请先登录 VibeDev 账号'));
+    expect(dialog.confirm.disabled).toBe(true);
+    const pick = (engine: 'whisper' | 'gateway') => {
+      dialog.choices.get(engine)!.checked = true;
+      dialog.choices.get(engine)!.dispatchEvent(new Event('change'));
+    };
+    pick('whisper');
+    expect(dialog.confirm.disabled).toBe(false);
+    pick('gateway');
+    await vi.waitFor(() => expect(dialog.confirm.disabled).toBe(false));
+    expect(dialog.cost.textContent).toContain('约 0.5 分钟原声（30 秒），约 ¥0.03');
+    expect(dialog.cost.textContent).toContain('计价依据：零售价每分钟 ¥0.05（读不到价目表时）');
+    expect(estimateGateway).toHaveBeenCalledTimes(2);
+  });
+
   it('offers nothing to confirm when no engine can run', () => {
-    const dialog = engineDialog(document, { engines: engines({ whisper: { available: false }, gateway: { available: false } }), preferred: 'whisper', seconds: 10 });
+    const dialog = engineDialog(document, offerOf({ engines: engines({ whisper: { available: false }, gateway: { available: false } }) }));
     expect(dialog.selected()).toBeNull();
     expect(dialog.confirm.disabled).toBe(true);
     expect(dialog.root.textContent).toContain('现在没有能用的识别方式');
@@ -429,22 +556,19 @@ describe('the engine question', () => {
 
   it('answers the chosen engine, and nothing on Esc', async () => {
     const ask = createEnginePrompt(document);
-    const first = ask({ engines: engines(), preferred: 'gateway', seconds: 60 });
-    (document.querySelector('[data-action="confirm"]') as HTMLButtonElement).click();
+    const first = ask(offerOf({ preferred: 'gateway' }));
+    const confirm = document.querySelector('[data-action="confirm"]') as HTMLButtonElement;
+    await vi.waitFor(() => expect(confirm.disabled).toBe(false));
+    confirm.click();
     expect(await first).toBe('gateway');
-    const second = ask({ engines: engines(), preferred: 'whisper', seconds: 60 });
+    const second = ask(offerOf());
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(await second).toBeNull();
     expect(document.querySelector('.consent')).toBeNull();
   });
 
-  it('estimates the audio a request would send, and its price', () => {
-    const cut = { project: { visualSegments: [{ id: 'v', duration: 40 }, { id: 'w', duration: 20 }], audioSegments: [{ id: 'a', duration: 9 }] } };
-    expect(estimateSeconds(cut, { start: 3, duration: 5 })).toBe(5);
-    expect(estimateSeconds(cut, { clipId: 'a' })).toBe(9);
-    expect(estimateSeconds(cut, {})).toBe(60);
-    expect(estimateSeconds(null, {})).toBeNull();
-    expect(gatewayCost(60)).toEqual({ minutes: 1, yuan: 0.05 });
-    expect(gatewayCost(1)).toEqual({ minutes: 0.1, yuan: 0.01 });
+  it('says an estimate is one, and passes an unknown basis through', () => {
+    expect(estimateText({ seconds: 1, amountCny: 0.01, basis: 'flat rate' })).toBe('估算：最多送去转写约 0.1 分钟原声（1 秒），约 ¥0.01。只送有人声的片段，实际计费通常更少。计价依据：flat rate');
+    expect(estimateText({ seconds: 60, basis: CATALOGUE_BASIS })).toBe('估算：最多送去转写约 1 分钟原声（60 秒）。只送有人声的片段，实际计费通常更少。计价依据：网关价目表的单价');
   });
 });

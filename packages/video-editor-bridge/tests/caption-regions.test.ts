@@ -109,6 +109,34 @@ describe('extractTimelineAudio', () => {
     expect(progress.at(-1)).toBe(100);
   });
 
+  it('decodes the fetched bytes themselves, not a copy, and lets the decoder go before mixing', async () => {
+    const steps: string[] = [];
+    const bytes = new ArrayBuffer(8);
+    const decodedFrom: unknown[] = [];
+    class FakeAudioContext {
+      async decodeAudioData(data: ArrayBuffer) {
+        decodedFrom.push(data);
+        const length = 2 * 16000;
+        return { sampleRate: 16000, length, numberOfChannels: 2, getChannelData: (channel: number) => { steps.push(`mix ${channel}`); return new Float32Array(length).fill(channel === 0 ? 0.5 : 0.1); } };
+      }
+      async close() { steps.push('close'); }
+    }
+    vi.stubGlobal('window', { AudioContext: FakeAudioContext });
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const response = new Response(new Blob(['x']));
+      vi.spyOn(response, 'arrayBuffer').mockResolvedValue(bytes);
+      return response;
+    }));
+    detectSpeech.mockResolvedValue({ probabilities: [], frameSeconds: 0.032, regions: [{ start: 0, end: 1 }] });
+    const { extractTimelineAudio } = await import('../src/transcription-runtime');
+    const result = await extractTimelineAudio({ sources: [{ clipId: 'v1', url: '/s', sourceIn: 0, sourceOut: 2 }], artifacts: {}, language: 'zh' }, () => {}, new AbortController().signal);
+    expect(decodedFrom).toEqual([bytes]);
+    expect(decodedFrom[0]).toBe(bytes);
+    expect(steps).toEqual(['close', 'mix 0', 'mix 1']);
+    expect(detectSpeech.mock.calls[0]![0][0]).toBeCloseTo(0.3, 5);
+    expect(result[0]!.regions.map(region => [region.start, region.end])).toEqual([[0, 1]]);
+  });
+
   it('skips the detector on digital silence, and stops when cancelled', async () => {
     stubDecoder(0, 0);
     const { extractTimelineAudio } = await import('../src/transcription-runtime');

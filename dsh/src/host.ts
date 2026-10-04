@@ -104,7 +104,6 @@ async function main(): Promise<void> {
     prepareTimeline: () => session.prepareTimeline(),
     adoptTimeline: state => session.adopt(state),
     reloadTimeline: () => session.reloadTimeline(),
-    timelineDocument: () => session.document,
     notify,
   });
   const runtime = Object.assign(createCapabilityRuntime({

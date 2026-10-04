@@ -14,7 +14,8 @@
  *      gateway's speech regions;
  *   3. report progress about every 250 ms (`…/progress`), stopping when the
  *      answer says the task was cancelled;
- *   4. post the result or the error (`…/result`).
+ *   4. post the result or the error (`…/result`); a result the plugin does
+ *      not accept is a failure, and its refusal is posted as the error.
  *
  * The Host keeps the task, the source snapshots, the models and the mapping
  * onto the timeline; this page only listens. A cancel also arrives from the
@@ -70,6 +71,14 @@ function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' && code !== '' && !message.includes(code) ? `${code}: ${message}` : message;
+}
+
+/** A result the plugin did not accept, as the error the page reports: its refusal, or the status. */
+async function rejectedResult(response: Response): Promise<Error> {
+  const answer = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+  const reason = typeof answer?.error === 'string' && answer.error !== '' ? answer.error : `HTTP ${response.status}`;
+  const code = typeof answer?.code === 'string' && answer.code !== '' ? answer.code : 'CAPTION_RESULT_REJECTED';
+  return Object.assign(new Error(`识别结果没有被接收（${response.status}）：${reason}`), { code });
 }
 
 /**
@@ -149,7 +158,10 @@ export async function runCaptionJob(options: RunnerOptions): Promise<RunnerOutco
     }
     if (cancelled) return 'cancelled';
     clearInterval(ticker);
-    await post('result', { ...ids, result });
+    // Done only when the plugin took the result; a refused one (too large, a
+    // job it no longer has) is this page's failure, reported like any other.
+    const posted = await post('result', { ...ids, result });
+    if (!posted.ok) throw await rejectedResult(posted);
     return 'done';
   } catch (error) {
     if (cancelled) return 'cancelled';

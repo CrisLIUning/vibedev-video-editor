@@ -11,8 +11,8 @@ const job: CaptionRunnerJob = {
   artifacts: { 'encoder-q8': '/api/dsh-film/models/whisper-small-q8/rev/encoder-q8', 'speech-vad': '/api/dsh-film/models/silero-vad/rev/speech-vad' },
 };
 
-/** The plugin's runner routes: the claim answers `claim`, progress answers `cancelled`. */
-function fakeRoutes(options: { claim?: Response | (() => Response); cancelled?: () => boolean } = {}) {
+/** The plugin's runner routes: the claim answers `claim`, progress answers `cancelled`, a result answers `result`. */
+function fakeRoutes(options: { claim?: Response | (() => Response); cancelled?: () => boolean; result?: (body: Record<string, unknown>) => Response } = {}) {
   const posts: Array<{ route: string; body: Record<string, unknown> }> = [];
   const fetch = vi.fn(async (url: string, init: RequestInit) => {
     const route = url.replace('/api/dsh-film/caption-runner/', '');
@@ -22,6 +22,7 @@ function fakeRoutes(options: { claim?: Response | (() => Response); cancelled?: 
       return typeof claim === 'function' ? claim() : claim ?? new Response(JSON.stringify(job), { status: 200 });
     }
     if (route === 'progress') return new Response(JSON.stringify({ cancelled: options.cancelled?.() ?? false }));
+    if (route === 'result' && options.result) return options.result(posts.at(-1)!.body);
     return new Response(JSON.stringify({ ok: true }));
   });
   return { fetch: fetch as unknown as typeof globalThis.fetch, posts };
@@ -90,6 +91,25 @@ describe('the caption runner page', () => {
     };
     expect(await runCaptionJob({ ...base, fetch, loadEditor: async () => editor })).toBe('failed');
     expect(posts.at(-1)).toEqual({ route: 'result', body: { runnerId: 'runner-7', jobId: 'job-1', error: 'CAPTION_SAMPLE_RATE_INVALID: decode failed' } });
+  });
+
+  it('fails, and posts the refusal as its error, when the plugin does not take the result', async () => {
+    const { fetch, posts } = fakeRoutes({
+      result: body => ('error' in body
+        ? new Response(JSON.stringify({ ok: true }))
+        : new Response(JSON.stringify({ error: 'result too large', code: 'CAPTION_RUNNER_REQUEST_TOO_LARGE' }), { status: 413 })),
+    });
+    const result = [{ sourceClipId: 'v1', segments: [], diagnostics: { duration: 6 } }];
+    expect(await runCaptionJob({ ...base, fetch, loadEditor: async () => ({ transcribeTimelineSources: async () => result }) })).toBe('failed');
+    expect(posts.filter(post => post.route === 'result').map(post => post.body)).toEqual([
+      { runnerId: 'runner-7', jobId: 'job-1', result },
+      { runnerId: 'runner-7', jobId: 'job-1', error: 'CAPTION_RUNNER_REQUEST_TOO_LARGE: 识别结果没有被接收（413）：result too large' },
+    ]);
+
+    // A refusal without a body still fails, by its status.
+    const bare = fakeRoutes({ result: () => new Response('', { status: 502 }) });
+    expect(await runCaptionJob({ ...base, fetch: bare.fetch, loadEditor: async () => ({ transcribeTimelineSources: async () => [] }) })).toBe('failed');
+    expect(bare.posts.at(-1)?.body.error).toBe('CAPTION_RESULT_REJECTED: 识别结果没有被接收（502）：HTTP 502');
   });
 
   it('stops when the progress answer says the task was cancelled, and posts nothing after', async () => {

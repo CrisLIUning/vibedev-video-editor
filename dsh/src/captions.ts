@@ -23,11 +23,13 @@ import type {
   CaptionDraft,
   CaptionEngineId,
   CaptionEngines,
+  CaptionEstimate,
   CaptionTaskSummary,
   CommandResult,
   TaskSnapshot,
   TimelineState,
   TranscribeBody,
+  TranscriptionEstimate,
   TranscriptionStarted,
 } from './api.ts';
 import { formatBytes } from './consent.ts';
@@ -36,7 +38,9 @@ import type { NoticeTone } from './session.ts';
 
 /** The models local recognition needs, asked about in this order (Studio's). */
 export const CAPTION_MODELS = ['whisper-small-q8', 'silero-vad'] as const;
-/** The gateway's retail price. */
+/** The models each engine needs on this machine: the gateway's speech regions are cut here with Silero VAD. */
+export const ENGINE_MODELS: Readonly<Record<CaptionEngineId, readonly string[]>> = { whisper: CAPTION_MODELS, gateway: ['silero-vad'] };
+/** The gateway's retail price, which the plugin charges by when it cannot read the catalogue's. */
 export const GATEWAY_YUAN_PER_MINUTE = 0.05;
 /** What the person is told before audio leaves the machine. */
 export const GATEWAY_NOTICE = '音频会上传到 VibeDev 网关转写（第三方 ASR），仅支持普通话；取消只能停止等待，已提交的转写仍会计费';
@@ -79,16 +83,22 @@ const STRINGS = {
   engineTitle: '识别原声字幕',
   engineLead: '选择识别方式。识别在后台进行，得到的是一份草稿，校对后才写入时间线。',
   whisper: '本机识别（免费）',
-  gateway: 'VibeDev 网关转写（¥0.05/分钟）',
+  gateway: 'VibeDev 网关转写（按分钟计费）',
   start: '开始识别',
   startPaid: '确认计费并识别',
   noEngine: '现在没有能用的识别方式',
+  estimating: '正在估算网关费用…',
+  estimateRefused: '估算不了网关费用，这次不能用网关转写：',
+  noEstimate: 'dsh-film 没有给出网关费用估算，没有提交；请更新 dsh-film 后再试',
+  repriced: '估算费用之后剪辑又改过了，网关费用比你确认的高，没有提交；请重新识别并确认新的费用',
 } as const;
 
 /** The plugin calls the flow makes (`api.ts`). */
 export interface CaptionHost {
   getCaptionEngines(): Promise<CaptionEngines>;
   startTranscription(body: TranscribeBody): Promise<TranscriptionStarted>;
+  /** The same request with `estimateOnly`: no task, nothing charged. */
+  estimateTranscription(body: TranscribeBody): Promise<TranscriptionEstimate>;
   listCaptionTasks(signal?: AbortSignal): Promise<{ tasks: CaptionTaskSummary[] }>;
   waitTask(taskId: string, since: number, timeoutMs: number, signal?: AbortSignal): Promise<TaskSnapshot<{ documentResult?: unknown }>>;
   cancelTask(taskId: string): Promise<unknown>;
@@ -101,8 +111,12 @@ export interface EngineOffer {
   engines: CaptionEngines;
   /** The engine to preselect. */
   preferred: CaptionEngineId;
-  /** At most this much audio would be recognized, when the page can tell. */
-  seconds: number | null;
+  /**
+   * The plugin's estimate of what the gateway would bill for this request
+   * (the source seconds it would send, at the price it charges), asked when
+   * the gateway is chosen; rejects with the plugin's refusal.
+   */
+  estimateGateway(): Promise<CaptionEstimate>;
 }
 
 /** Ask the person which engine to use; null when they cancel. */
@@ -118,8 +132,6 @@ export interface CaptionFlowOptions {
   adoptTimeline(state: TimelineState): void;
   /** Re-read the cut after captions were written. */
   reloadTimeline(): Promise<void>;
-  /** The saved cut, for the gateway's estimate. */
-  timelineDocument(): unknown;
   notify(message: string, tone: NoticeTone): void;
   chooseEngine?: ChooseEngine;
   doc?: Document;
@@ -129,7 +141,6 @@ export interface CaptionFlowOptions {
 }
 
 type TranscribeTimeline = NonNullable<VideoEditorCapabilityRuntime['transcribeTimeline']>;
-type TranscribeRequest = Parameters<TranscribeTimeline>[0];
 
 function element<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, attributes: Record<string, string> = {}, text?: string): HTMLElementTagNameMap[K] {
   const node = doc.createElement(tag);
@@ -152,30 +163,27 @@ function refusal(error: unknown): Error {
 
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
-/**
- * At most how many seconds of audio a request would send: its range, the
- * clip it names, or the whole visual track (the original sound of the
- * videos, which is what recognition takes by default). Null when the cut
- * says nothing usable.
- */
-export function estimateSeconds(document: unknown, request: Pick<TranscribeRequest, 'clipId' | 'start' | 'duration'>): number | null {
-  if (finite(request.start) && finite(request.duration) && request.duration > 0) return request.duration;
-  const project = (document as { project?: Record<string, unknown> } | null)?.project;
-  if (!project) return null;
-  const clips = (key: string): Array<{ id?: unknown; duration?: unknown }> => (Array.isArray(project[key]) ? project[key] as Array<{ id?: unknown; duration?: unknown }> : []);
-  if (request.clipId) {
-    const clip = [...clips('visualSegments'), ...clips('audioSegments')].find(item => item.id === request.clipId);
-    return clip && finite(clip.duration) && clip.duration > 0 ? clip.duration : null;
-  }
-  const total = clips('visualSegments').reduce((sum, clip) => sum + (finite(clip.duration) && clip.duration > 0 ? clip.duration : 0), 0);
-  return total > 0 ? total : null;
+/** What the plugin's price is based on: its catalogue's price, or the retail price when it cannot read one. */
+function basisText(basis: string): string {
+  if (/catalog/i.test(basis)) return '网关价目表的单价';
+  if (/retail/i.test(basis)) return `零售价每分钟 ¥${GATEWAY_YUAN_PER_MINUTE}（读不到价目表时）`;
+  return basis;
 }
 
-/** The gateway's price for `seconds` of audio: minutes (one decimal, at least 0.1) and yuan. */
-export function gatewayCost(seconds: number): { minutes: number; yuan: number } {
-  const minutes = Math.max(0.1, Math.ceil((seconds / 60) * 10) / 10);
-  return { minutes, yuan: Math.round(minutes * GATEWAY_YUAN_PER_MINUTE * 100) / 100 };
+/**
+ * The plugin's estimate, for the person (exported for tests): the source
+ * audio it would send at most and its price, said to be an estimate, with
+ * what the price is based on.
+ */
+export function estimateText(estimate: CaptionEstimate): string {
+  const minutes = Math.max(0.1, Math.ceil((estimate.seconds / 60) * 10) / 10);
+  const price = finite(estimate.amountCny) ? `，约 ¥${estimate.amountCny.toFixed(2)}` : '';
+  return `估算：最多送去转写约 ${minutes} 分钟原声（${estimate.seconds} 秒）${price}。只送有人声的片段，实际计费通常更少。计价依据：${basisText(estimate.basis)}`;
 }
+
+/** Whether an estimate asks for more than the one the person confirmed. */
+const costsMore = (now: CaptionEstimate, confirmed: CaptionEstimate): boolean =>
+  now.seconds > confirmed.seconds || (finite(now.amountCny) && finite(confirmed.amountCny) && now.amountCny > confirmed.amountCny);
 
 function engineNote(engine: CaptionEngines['engines'][number]): string {
   if (engine.id === 'whisper') {
@@ -224,16 +232,14 @@ export function engineDialog(doc: Document, offer: EngineOffer): {
   const initial = [offer.preferred, offer.engines.default, ...choices.keys()].find(id => choices.get(id)?.disabled === false);
   if (initial !== undefined) choices.get(initial)!.checked = true;
 
-  // The price and the upload notice, shown while the gateway is chosen.
+  // The price and the upload notice, shown while the gateway is chosen. The
+  // price is the plugin's estimate for this request, asked when the gateway
+  // is chosen; paying is not offered before it is shown.
   const cost = element(doc, 'div', { class: 'caption-cost', role: 'note' });
-  if (offer.seconds !== null) {
-    const { minutes, yuan } = gatewayCost(offer.seconds);
-    cost.append(element(doc, 'p', {}, `最多约 ${minutes} 分钟 × ¥${GATEWAY_YUAN_PER_MINUTE} ≈ ¥${yuan.toFixed(2)}（按实际送去转写的时长计费）`));
-  } else {
-    cost.append(element(doc, 'p', {}, `按实际送去转写的时长计费，每分钟 ¥${GATEWAY_YUAN_PER_MINUTE}`));
-  }
-  cost.append(element(doc, 'p', {}, GATEWAY_NOTICE));
+  const price = element(doc, 'p', { role: 'status' });
+  cost.append(price, element(doc, 'p', {}, GATEWAY_NOTICE));
   card.append(cost);
+  let quote: { state: 'idle' | 'asking' } | { state: 'ready'; estimate: CaptionEstimate } | { state: 'refused'; reason: string } = { state: 'idle' };
 
   const empty = element(doc, 'p', { class: 'consent-note', role: 'status' }, STRINGS.noEngine);
   card.append(empty);
@@ -248,12 +254,27 @@ export function engineDialog(doc: Document, offer: EngineOffer): {
   const sync = (): void => {
     const engine = selected();
     cost.hidden = engine !== 'gateway';
+    price.textContent = quote.state === 'ready'
+      ? estimateText(quote.estimate)
+      : quote.state === 'refused' ? `${STRINGS.estimateRefused}${quote.reason}` : STRINGS.estimating;
+    price.classList.toggle('caption-alert', quote.state === 'refused');
     empty.hidden = engine !== null;
-    confirm.disabled = engine === null;
+    confirm.disabled = engine === null || (engine === 'gateway' && quote.state !== 'ready');
     confirm.textContent = engine === 'gateway' ? STRINGS.startPaid : STRINGS.start;
   };
-  for (const input of choices.values()) input.addEventListener('change', sync);
-  sync();
+  // The estimate is asked when the gateway is chosen, and again when it is chosen after a refusal.
+  const changed = (): void => {
+    if (selected() === 'gateway' && (quote.state === 'idle' || quote.state === 'refused')) {
+      quote = { state: 'asking' };
+      offer.estimateGateway().then(
+        (estimate) => { quote = { state: 'ready', estimate }; sync(); },
+        (failure: unknown) => { quote = { state: 'refused', reason: describeRefusal(failure) }; sync(); },
+      );
+    }
+    sync();
+  };
+  for (const input of choices.values()) input.addEventListener('change', changed);
+  changed();
   return { root, confirm, cancel, choices, cost, selected };
 }
 
@@ -686,6 +707,8 @@ export function createCaptionFlow(options: CaptionFlowOptions): {
       if (disposed || turn !== generation || isAbort(failure)) return;
       pollError = describeRefusal(failure);
       renderPanel();
+      // A plugin that did not answer once is asked again, at the idle pace.
+      timer = setTimeout(() => { void load(); }, idlePoll);
     }
   }
 
@@ -765,48 +788,99 @@ export function createCaptionFlow(options: CaptionFlowOptions): {
       } catch (failure) {
         throw refusal(failure);
       }
-      const engine = await choose({ engines, preferred: remembered() ?? engines.default, seconds: estimateSeconds(options.timelineDocument(), request) });
+      const bodyFor = (engine: CaptionEngineId): Omit<TranscribeBody, 'baseRevision' | 'requestId'> => {
+        const language = engine === 'gateway' ? 'zh' : request.language;
+        return {
+          engine,
+          ...(language ? { language } : {}),
+          ...(request.clipId ? { clipIds: [request.clipId] } : {}),
+          ...(finite(request.start) && finite(request.duration) ? { range: { start: request.start, end: request.start + request.duration } } : {}),
+        };
+      };
+      // What the gateway would bill, as the plugin estimates it for the cut as
+      // saved: asked while the person chooses, kept with the revision it was
+      // asked on. A refused estimate is asked afresh next time.
+      type Quote = { revision: number; estimate: CaptionEstimate };
+      const estimateAt = async (baseRevision: number): Promise<Quote> => {
+        let answer: TranscriptionEstimate;
+        try {
+          answer = await host.estimateTranscription({ ...bodyFor('gateway'), baseRevision, requestId: crypto.randomUUID() });
+        } catch (failure) {
+          // The refusal says the newer cut was loaded: show it.
+          if (failure instanceof TimelineConflictError) options.adoptTimeline(failure.current);
+          throw failure;
+        }
+        const estimate = (answer as Partial<TranscriptionEstimate> | null)?.estimate;
+        if (!estimate || !finite(estimate.seconds)) {
+          // A plugin that does not know estimates started a recognition instead: stop it.
+          const taskId = (answer as { taskId?: unknown } | null)?.taskId;
+          if (typeof taskId === 'string') void host.cancelTask(taskId).catch(() => undefined);
+          throw new Error(STRINGS.noEstimate);
+        }
+        return { revision: baseRevision, estimate };
+      };
+      let quoted: Promise<Quote> | null = null;
+      const quote = (): Promise<Quote> => {
+        if (quoted === null) {
+          const asked = options.prepareTimeline().then(estimateAt);
+          quoted = asked;
+          asked.catch(() => { if (quoted === asked) quoted = null; });
+        }
+        return quoted;
+      };
+      const engine = await choose({ engines, preferred: remembered() ?? engines.default, estimateGateway: async () => (await quote()).estimate });
       if (engine === null) throw abortError();
       remember(engine);
-      const whisper = engines.engines.find(item => item.id === 'whisper');
-      if (engine === 'whisper') {
-        // Short and explicit: the plugin downloads and prepares the models itself.
-        for (const modelId of CAPTION_MODELS) {
-          if (whisper?.id === 'whisper' && whisper.consent[modelId] === true) continue;
-          await options.ensureModelConsent(modelId);
+      let confirmed: Quote | null = null;
+      if (engine === 'gateway') {
+        // Paying is confirmed only against an estimate the plugin gave.
+        try {
+          confirmed = await quote();
+        } catch (failure) {
+          if (isAbort(failure)) throw failure;
+          throw refusal(failure);
         }
       }
-      const language = engine === 'gateway' ? 'zh' : request.language;
-      const body: Omit<TranscribeBody, 'baseRevision' | 'requestId'> = {
-        engine,
-        ...(language ? { language } : {}),
-        ...(request.clipId ? { clipIds: [request.clipId] } : {}),
-        ...(finite(request.start) && finite(request.duration) ? { range: { start: request.start, end: request.start + request.duration } } : {}),
-        ...(engine === 'gateway' ? { spendingConfirmed: true } : {}),
-      };
-      const submit = async (retried: boolean): Promise<TranscriptionStarted> => {
+      // Short and explicit: every model the engine needs is asked about before
+      // anything is sent; the plugin downloads and prepares them itself.
+      const granted = (modelId: string): boolean => engines.engines.some(item => item.consent?.[modelId] === true);
+      for (const modelId of ENGINE_MODELS[engine]) {
+        if (!granted(modelId)) await options.ensureModelConsent(modelId);
+      }
+      const body = { ...bodyFor(engine), ...(engine === 'gateway' ? { spendingConfirmed: true } : {}) };
+      // One retry for a cut that moved on and one for a consent refusal, each on its own.
+      let conflictRetried = false;
+      let consentRetried = false;
+      const submit = async (): Promise<TranscriptionStarted> => {
         const baseRevision = await options.prepareTimeline();
+        if (confirmed !== null && baseRevision !== confirmed.revision) {
+          // The cut changed after the person saw the price: never send more than they agreed to.
+          const now = await estimateAt(baseRevision);
+          if (costsMore(now.estimate, confirmed.estimate)) throw new Error(STRINGS.repriced);
+          confirmed = now;
+        }
         try {
           return await host.startTranscription({ ...body, baseRevision, requestId: crypto.randomUUID() });
         } catch (failure) {
-          if (retried) throw failure;
           // Recognition reads the saved cut and never edits it: a cut that
           // moved on is shown and asked about again on its new revision.
-          if (failure instanceof TimelineConflictError) {
+          if (failure instanceof TimelineConflictError && !conflictRetried) {
+            conflictRetried = true;
             options.adoptTimeline(failure.current);
-            return submit(true);
+            return submit();
           }
-          if (failure instanceof HostRequestError && failure.code === 'VIDEO_EDITOR_MODEL_CONSENT_REQUIRED') {
+          if (failure instanceof HostRequestError && failure.code === 'VIDEO_EDITOR_MODEL_CONSENT_REQUIRED' && !consentRetried) {
+            consentRetried = true;
             const listed = Array.isArray(failure.extra.modelIds) ? failure.extra.modelIds.filter((id): id is string => typeof id === 'string') : [];
-            for (const modelId of listed.length > 0 ? listed : CAPTION_MODELS) await options.ensureModelConsent(modelId);
-            return submit(true);
+            for (const modelId of listed.length > 0 ? listed : ENGINE_MODELS[engine]) await options.ensureModelConsent(modelId);
+            return submit();
           }
           throw failure;
         }
       };
       let started: TranscriptionStarted;
       try {
-        started = await submit(false);
+        started = await submit();
       } catch (failure) {
         if (isAbort(failure)) throw failure;
         throw refusal(failure);

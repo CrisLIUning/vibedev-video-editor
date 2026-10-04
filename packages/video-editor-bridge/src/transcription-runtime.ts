@@ -55,25 +55,31 @@ const ASR_SAMPLE_RATE = 16000;
  * Decode a file at 16 kHz (the browser resamples while decoding), average its
  * channels and keep `[sourceIn, sourceOut)`. The whole file is decoded, as the
  * Whisper path does: browsers cannot decode part of a compressed file.
+ *
+ * Memory is the limit on long sources, so nothing is held twice: decoding
+ * takes the fetched bytes themselves (no copy), and the decoded file, every
+ * channel of it, is dropped as soon as its mono stretch is made.
  */
-async function decodeStretch16k(blob: Blob, sourceIn: number, sourceOut: number): Promise<Float32Array> {
+async function decodeStretch16k(bytes: ArrayBuffer, sourceIn: number, sourceOut: number): Promise<Float32Array> {
   const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持 AudioContext，无法识别音频。');
   const context = new AudioContextClass({ sampleRate: ASR_SAMPLE_RATE });
+  let decoded: AudioBuffer;
   try {
-    const decoded = await context.decodeAudioData((await blob.arrayBuffer()).slice(0));
-    if (decoded.sampleRate !== ASR_SAMPLE_RATE) throw new Error('CAPTION_SAMPLE_RATE_INVALID');
-    const first = Math.max(0, Math.min(decoded.length, Math.floor(sourceIn * ASR_SAMPLE_RATE)));
-    const last = Math.max(first, Math.min(decoded.length, Math.floor(sourceOut * ASR_SAMPLE_RATE)));
-    const mono = new Float32Array(last - first);
-    for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-      const values = decoded.getChannelData(channel).subarray(first, last);
-      for (let index = 0; index < mono.length; index += 1) mono[index]! += values[index]! / decoded.numberOfChannels;
-    }
-    return mono;
+    decoded = await context.decodeAudioData(bytes);
   } finally {
+    // A decoded buffer outlives its context: the decoder is let go before mixing.
     await context.close().catch(() => {});
   }
+  if (decoded.sampleRate !== ASR_SAMPLE_RATE) throw new Error('CAPTION_SAMPLE_RATE_INVALID');
+  const first = Math.max(0, Math.min(decoded.length, Math.floor(sourceIn * ASR_SAMPLE_RATE)));
+  const last = Math.max(first, Math.min(decoded.length, Math.floor(sourceOut * ASR_SAMPLE_RATE)));
+  const mono = new Float32Array(last - first);
+  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+    const values = decoded.getChannelData(channel).subarray(first, last);
+    for (let index = 0; index < mono.length; index += 1) mono[index]! += values[index]! / decoded.numberOfChannels;
+  }
+  return mono;
 }
 
 /**
@@ -103,10 +109,10 @@ export async function extractTimelineAudio(
     report(index, 0, '读取原声');
     const response = await fetch(source.url, { signal });
     if (!response.ok) throw new Error('CAPTION_SOURCE_UNAVAILABLE');
-    const blob = await response.blob();
+    const bytes = await response.arrayBuffer();
     signal.throwIfAborted();
     report(index, 0.1, '解码原声音频');
-    const audio = await decodeStretch16k(blob, source.sourceIn, source.sourceOut);
+    const audio = await decodeStretch16k(bytes, source.sourceIn, source.sourceOut);
     signal.throwIfAborted();
     if (isDigitalSilence(audio)) {
       result.push({ sourceClipId: source.clipId, regions: [] });

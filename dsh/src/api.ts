@@ -338,7 +338,7 @@ export interface CaptionEngines {
   default: CaptionEngineId;
   engines: Array<
     | { id: 'whisper'; available: boolean; reason?: string; consent: Record<string, boolean>; downloadBytes: number; runner: 'connected' | 'none' }
-    | { id: 'gateway'; available: boolean; reason?: string; languages: string[]; model?: string; limits: { maxSeconds: number; maxBytes: number } }
+    | { id: 'gateway'; available: boolean; reason?: string; languages: string[]; model?: string; limits: { maxSeconds: number; maxBytes: number }; consent?: Record<string, boolean> }
   >;
 }
 
@@ -352,12 +352,25 @@ export interface TranscribeBody {
   spendingConfirmed?: boolean;
 }
 
+/** What the plugin estimates a recognition sends and costs: source seconds at most, their price, and what the price is based on. */
+export interface CaptionEstimate {
+  seconds: number;
+  amountCny?: number;
+  basis: string;
+}
+
 export interface TranscriptionStarted {
   taskId: string;
   status: string;
   engine?: CaptionEngineId;
   model?: string;
-  estimate?: { seconds: number; amountCny?: number; basis: string };
+  estimate?: CaptionEstimate;
+}
+
+/** The answer to an estimate: no task, nothing copied, nothing charged. */
+export interface TranscriptionEstimate {
+  estimate: CaptionEstimate;
+  engine?: CaptionEngineId;
 }
 
 /** One recognition task of this film; `progress` and `error` when the plugin includes them. */
@@ -406,6 +419,10 @@ export const getCaptionEngines = (): Promise<CaptionEngines> =>
 /** Start recognizing the saved cut's original audio in the background. */
 export const startTranscription = (body: TranscribeBody): Promise<TranscriptionStarted> =>
   studio(`/api/canvas/timelines/${board}/transcribe${projectQuery}`, '提交字幕识别', { method: 'POST', json: body });
+
+/** What that recognition would send and cost: planned and checked like one, but no task is created and nothing is charged. */
+export const estimateTranscription = (body: TranscribeBody): Promise<TranscriptionEstimate> =>
+  studio(`/api/canvas/timelines/${board}/transcribe${projectQuery}`, '估算转写费用', { method: 'POST', json: { ...body, estimateOnly: true } });
 
 export const listCaptionTasks = (signal?: AbortSignal): Promise<{ tasks: CaptionTaskSummary[] }> =>
   studio(`/api/canvas/timelines/${board}/captions/tasks${projectQuery}`, '读取字幕识别任务', signal ? { signal } : {});
