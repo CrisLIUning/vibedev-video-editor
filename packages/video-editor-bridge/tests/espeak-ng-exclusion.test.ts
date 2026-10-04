@@ -20,6 +20,14 @@ const kokoroOff = !KOKORO_VOICES_ENABLED;
 const espeakPiperOff = !ESPEAK_PIPER_VOICES_ENABLED;
 
 describe('eSpeak NG front ends stay out of VibeDev builds', () => {
+  it('ships with both eSpeak front ends turned off', () => {
+    // Turning one on brings GPL-3.0 code back into the build and the marker check
+    // stops looking for it; doing that must be a deliberate licence decision that
+    // changes this test too, not a stray edit.
+    expect(KOKORO_VOICES_ENABLED).toBe(false);
+    expect(ESPEAK_PIPER_VOICES_ENABLED).toBe(false);
+  });
+
   it('puts each GPL import behind a throw the bundler can see', () => {
     // A throw at the top of the function makes the rest of it unreachable, so
     // Rollup drops the dynamic import and the chunk it would load.
