@@ -2,6 +2,10 @@
  * The question asked before the editor downloads an AI model: what it is for,
  * how big it is, its licence and where it comes from. Shown over the editor
  * in the page's own colours; Esc or 不下载 declines, and nothing downloads.
+ *
+ * The renderer (FFmpeg) is asked about the same way, through the same consent
+ * routes, but it is a separate program under its own licence rather than a
+ * model, and the question says so.
  */
 
 import type { ModelListing } from './api.ts';
@@ -18,7 +22,13 @@ const PURPOSES: Readonly<Record<string, string>> = {
   depth: '估算画面景深',
   segmentation: '抠出人物或物体',
   'caption-font': '用这款字体显示字幕',
+  renderer: '在本机把剪辑渲染成视频',
 };
+
+/** Whether a listing is a program the plugin runs (the renderer), not a model the editor loads. */
+export function isProgram(model: ModelListing): boolean {
+  return model.capability === 'renderer' || model.id.startsWith('ffmpeg-');
+}
 
 /** A size for people: KB below a megabyte, GB from a gigabyte. */
 export function formatBytes(bytes: number): string {
@@ -45,9 +55,12 @@ export function consentDialog(doc: Document, model: ModelListing): { root: HTMLE
   const root = element(doc, 'div', { class: 'consent', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'consent-title', 'aria-describedby': 'consent-lead' });
   const card = element(doc, 'div', { class: 'consent-card' });
   root.append(card);
-  card.append(element(doc, 'h2', { id: 'consent-title' }, '下载 AI 模型'));
-  const purpose = PURPOSES[model.capability] ?? '使用这项功能';
-  card.append(element(doc, 'p', { id: 'consent-lead', class: 'consent-lead' }, `剪辑台要先下载「${model.label}」，才能${purpose}。`));
+  const program = isProgram(model);
+  card.append(element(doc, 'h2', { id: 'consent-title' }, program ? '下载渲染程序' : '下载 AI 模型'));
+  const purpose = PURPOSES[model.capability] ?? (program ? PURPOSES.renderer! : '使用这项功能');
+  card.append(element(doc, 'p', { id: 'consent-lead', class: 'consent-lead' }, program
+    ? `剪辑台要先下载「${model.label}」，才能${purpose}。它是一个单独的程序，不是 AI 模型：按它自己的许可证发布，由 dsh-film 校验后只在渲染时运行。`
+    : `剪辑台要先下载「${model.label}」，才能${purpose}。`));
 
   const facts = element(doc, 'dl', { class: 'consent-facts' });
   const fact = (term: string, ...content: (Node | string)[]): void => {

@@ -3,6 +3,10 @@
  * bundle built for the plugin's base, plus the host page that mounts it
  * (`dsh/`), all in `dist-dsh/`. dsh-film copies that folder to `apps/editor`.
  *
+ * Beside the host page (`index.html` + `host.js`) sits the caption runner
+ * (`caption-runner.html` + `caption-runner.js`): the hidden page dsh-film's
+ * client half mounts to run one speech-recognition job with the same bundle.
+ *
  *   npm run build:dsh                 # editor + host page
  *   DSH_REUSE_EDITOR=1 npm run build:dsh   # host page only, keeps the editor bundle
  */
@@ -87,10 +91,17 @@ async function buildEditor(): Promise<void> {
   await Promise.all(UPSTREAM_SITE.map(entry => rm(path.join(outputRoot, entry), { recursive: true, force: true })));
 }
 
+/** The pages beside the editor bundle: each an HTML file and its script. */
+const HOST_PAGES = [
+  { html: 'index.html', script: 'host' },
+  { html: 'caption-runner.html', script: 'caption-runner' },
+] as const;
+
 async function buildHostPage(): Promise<void> {
   await build({
-    entryPoints: [path.join(repoRoot, 'dsh', 'src', 'host.ts')],
-    outfile: path.join(outputRoot, 'host.js'),
+    entryPoints: Object.fromEntries(HOST_PAGES.map(page => [page.script, path.join(repoRoot, 'dsh', 'src', `${page.script}.ts`)])),
+    outdir: outputRoot,
+    entryNames: '[name]',
     bundle: true,
     format: 'esm',
     platform: 'browser',
@@ -99,12 +110,12 @@ async function buildHostPage(): Promise<void> {
     legalComments: 'none',
     logLevel: 'warning',
   });
-  await copyFile(path.join(repoRoot, 'dsh', 'index.html'), path.join(outputRoot, 'index.html'));
+  for (const page of HOST_PAGES) await copyFile(path.join(repoRoot, 'dsh', page.html), path.join(outputRoot, page.html));
 }
 
 async function check(): Promise<void> {
   const files = await listFiles(outputRoot);
-  for (const required of ['index.html', 'host.js', 'video-editor.js']) {
+  for (const required of ['index.html', 'host.js', 'caption-runner.html', 'caption-runner.js', 'video-editor.js']) {
     if (!files.includes(required)) throw new Error(`dist-dsh is missing ${required}`);
   }
   const unroutable = files.filter(file => !file.split('/').every(segment => ROUTABLE_SEGMENT.test(segment)));

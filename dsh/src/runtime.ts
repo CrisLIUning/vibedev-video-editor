@@ -8,7 +8,9 @@
  * file — on a board an asset is its file, `canvas-file:<path>` — and a
  * placement on the timeline is a command the plugin applies to the saved cut.
  * Tasks are this page's own (there is no daemon task table under DSH), so
- * closing the editor cancels them.
+ * closing the editor cancels them — except caption recognition, which the
+ * plugin runs as its own background task (`captions.ts`) and which outlives
+ * the tab: the runtime only hands the editor's CC buttons to it.
  */
 
 import type {
@@ -37,6 +39,8 @@ export interface RuntimeHost {
   onTimelineChanged(): Promise<void>;
   /** Re-read the material after a new file. */
   onAssetsChanged(): Promise<void>;
+  /** Submit a background recognition of the saved cut (the CC buttons); absent, the editor says it has none. */
+  transcribeTimeline?: VideoEditorCapabilityRuntime['transcribeTimeline'];
 }
 
 const EXTENSION_BY_TYPE: Readonly<Record<string, string>> = {
@@ -156,6 +160,8 @@ export function createCapabilityRuntime(host: RuntimeHost): VideoEditorCapabilit
   };
 
   return {
+    ...(host.transcribeTimeline ? { transcribeTimeline: host.transcribeTimeline } : {}),
+
     async pinSourceAsset(request) {
       const key = request.localAssetId.trim();
       if (key === '') throw new Error('local video editor asset id is required');

@@ -8,6 +8,11 @@
  * adopted — the editor imports it and keeps the person's own edits through its
  * field gate, so its next autosave carries both — rather than retried as it
  * was, which would write over the other change unseen.
+ *
+ * 渲染到项目 is the plugin's own render (ffmpeg on this machine, Studio's
+ * `startRender`): saves are drained first so the file is the cut on screen,
+ * the render pins that revision, and progress and the outcome go through the
+ * editor's toast, where its browser export reports too.
  */
 
 import type {
@@ -19,12 +24,15 @@ import type {
   VideoEditorHostEvent,
   VideoEditorProjectAspect,
   VideoEditorProjectFile,
+  VideoEditorRenderCheck,
+  VideoEditorRenderRequestSettings,
   VideoEditorVoiceOutcome,
 } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { HOST_PROJECT_ASPECTS } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { createEmptyTimelineArchive } from '../../packages/video-editor-bridge/src/empty-archive.ts';
-import { TimelineConflictError } from './api.ts';
-import type { PlacedClip, SoundPlaced, TimelineState, UploadedFile } from './api.ts';
+import { HostRequestError, TimelineConflictError } from './api.ts';
+import type { PlacedClip, RenderBody, RenderCheck, RenderedFile, SoundPlaced, TaskSnapshot, TimelineState, UploadedFile } from './api.ts';
+import { describeRefusal } from './refusals.ts';
 
 /** What the session needs from the plugin. */
 export interface SessionApi {
@@ -39,6 +47,10 @@ export interface SessionApi {
   placeBoardMedia?(body: { source: { nodeId: string }; baseRevision: number; operationId: string; track?: 'music'; at?: number }): Promise<PlacedClip>;
   swapVersion?(body: { clipId: string; source: { nodeId: string } | { path: string }; baseRevision: number; operationId: string }): Promise<{ name: string }>;
   placeSound?(body: { script: { storyDocumentId: string } | { nodeId: string }; baseRevision: number; operationId: string }): Promise<{ items: SoundPlaced[]; warnings: string[] }>;
+  /** The plugin's render; absent, 渲染到项目 does nothing. */
+  renderTimeline?(body: RenderBody): Promise<{ taskId: string }>;
+  checkRender?(body: RenderBody): Promise<RenderCheck>;
+  waitTask?(taskId: string, since: number, timeoutMs: number): Promise<TaskSnapshot<RenderedFile>>;
 }
 
 /** The id prefix of a screenplay in the 剧本 menu; other ids are board text nodes. */
@@ -60,10 +72,54 @@ export interface SessionOptions {
   aspect?: string;
   /** A save failed or recovered (`null`). */
   onSaveError?(message: string | null): void;
+  /** A line for the person, through the editor's toast. */
+  notify?(message: string, tone: NoticeTone): void;
+  /**
+   * Ask for and download the renderer the plugin offers when it has no
+   * ffmpeg (`FFMPEG_UNAVAILABLE` with `downloadable`); rejects with an
+   * AbortError when the person declines.
+   */
+  obtainRenderer?(modelId: string): Promise<void>;
 }
 
 /** Where exported cuts are kept, relative to `film/`. */
 export const RENDER_DIR = 'canvas/renders';
+
+const RENDER_FRAME_RATES: readonly number[] = [24, 30, 60];
+const RENDER_RESOLUTIONS: readonly string[] = ['720', '1080', '1440', '2160'];
+/** Progress the editor's toast is worth interrupting for. */
+const PROGRESS_MARKS = [25, 50, 75];
+/** How long one long-poll step of a render may wait. */
+const RENDER_WAIT_MS = 25_000;
+
+/** The render's percentage from its progress lines (`render N% · …`), or `fallback`. */
+export function percentOf(progress: readonly string[], fallback: number): number {
+  for (let index = progress.length - 1; index >= 0; index -= 1) {
+    const match = /render (\d+)%/.exec(progress[index] ?? '');
+    if (match) return Number(match[1]);
+  }
+  return fallback;
+}
+
+/**
+ * The export panel's settings in the shapes the plugin takes. The panel offers
+ * what the plugin renders, so anything else falls back to the defaults.
+ */
+export function renderRequestOf(settings: VideoEditorRenderRequestSettings): RenderBody {
+  const frameRate = RENDER_FRAME_RATES.includes(settings.frameRate) ? settings.frameRate as 24 | 30 | 60 : 30;
+  const resolution = RENDER_RESOLUTIONS.includes(settings.resolution) ? settings.resolution as '720' | '1080' | '1440' | '2160' : '720';
+  const fileName = settings.fileName?.trim();
+  return { frameRate, resolution, ...(fileName ? { fileName } : {}) };
+}
+
+/** The renderer download a `FFMPEG_UNAVAILABLE` refusal offers, when it offers one. */
+function offeredRenderer(error: unknown): string | null {
+  if (!(error instanceof HostRequestError) || error.code !== 'FFMPEG_UNAVAILABLE') return null;
+  const detail = error.extra.detail as { downloadable?: unknown; modelId?: unknown } | undefined;
+  return detail?.downloadable === true && typeof detail.modelId === 'string' && detail.modelId !== '' ? detail.modelId : null;
+}
+
+const isAbort = (error: unknown): boolean => (error as { name?: unknown } | null)?.name === 'AbortError';
 
 const isAspect = (value: string | undefined): value is VideoEditorProjectAspect =>
   value !== undefined && (HOST_PROJECT_ASPECTS as readonly string[]).includes(value);
@@ -93,6 +149,7 @@ export class TimelineSession {
   private externalPending = false;
   private externalTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
+  private rendering = false;
 
   constructor(private readonly options: SessionOptions) {}
 
@@ -171,6 +228,9 @@ export class TimelineSession {
         return this.moveHistory(event.direction);
       case 'error':
         this.options.onSaveError?.(event.message);
+        return undefined;
+      case 'render-request':
+        void this.startRender(event.settings);
         return undefined;
       default:
         return undefined;
@@ -257,6 +317,11 @@ export class TimelineSession {
     await this.drainSaves();
     if (this.busy) throw new Error('剪辑还没保存完，请稍后再试');
     return this.revision;
+  }
+
+  /** Show the cut the plugin says is current (a conflict's answer). */
+  adopt(state: TimelineState): void {
+    this.applyState(state);
   }
 
   /** Re-read the cut after the plugin committed a change of its own (a placement). */
@@ -437,6 +502,106 @@ export class TimelineSession {
       await new Promise(resolve => setTimeout(resolve, VOICE_RETRY_MS));
     }
     return { status: 'busy' };
+  }
+
+  /**
+   * 渲染到项目: drain saves, have the plugin render the revision on screen,
+   * follow the task with a toast per quarter, and say where the file went.
+   * A cut that moved on is adopted and reported, not rendered unseen; a
+   * missing ffmpeg the plugin can download is asked about once, then the
+   * render is asked for again; a render already running is followed.
+   */
+  async startRender(settings: VideoEditorRenderRequestSettings): Promise<void> {
+    const { renderTimeline, waitTask } = this.options.api;
+    if (!renderTimeline || !waitTask) return;
+    const say = (text: string, tone: NoticeTone = 'info'): void => {
+      if (!this.disposed) this.options.notify?.(text, tone);
+    };
+    if (this.rendering) {
+      say('已经在渲染了，等这一次完成');
+      return;
+    }
+    this.rendering = true;
+    try {
+      say('正在提交渲染…');
+      const body = renderRequestOf(settings);
+      let taskId: string | undefined;
+      let offered = false;
+      while (taskId === undefined) {
+        await this.drainSaves();
+        try {
+          taskId = (await renderTimeline({ ...body, baseRevision: this.revision })).taskId;
+        } catch (error) {
+          const modelId = offeredRenderer(error);
+          if (modelId !== null && !offered && this.options.obtainRenderer) {
+            offered = true;
+            say('本机没有 ffmpeg，先下载渲染程序');
+            await this.options.obtainRenderer(modelId);
+            say('渲染程序已就绪，正在提交渲染…');
+            continue;
+          }
+          const busy = error instanceof HostRequestError && error.code === 'RENDER_BUSY' ? error.extra.taskId : undefined;
+          if (typeof busy !== 'string' || busy === '') throw error;
+          say('已经有一次渲染在进行，接着报告它的进度');
+          taskId = busy;
+        }
+      }
+      let since = 0;
+      let percent = 0;
+      const announced = new Set<number>();
+      for (;;) {
+        const snapshot = await waitTask(taskId, since, RENDER_WAIT_MS);
+        if (this.disposed) return;
+        since = snapshot.nextSince;
+        percent = percentOf(snapshot.progress, percent);
+        if (snapshot.status === 'done' && snapshot.file) {
+          const file = snapshot.file;
+          say(`已存入 film/${file.name}${file.landedNodeId ? '，并放到了分镜画布上' : ''}`, 'success');
+          void this.refreshMaterial();
+          return;
+        }
+        if (snapshot.status === 'failed' || snapshot.status === 'interrupted') {
+          say(`渲染失败：${snapshot.error ? describeRefusal(snapshot.error) : snapshot.status}`, 'error');
+          return;
+        }
+        // One toast per quarter, not one per poll: the editor's toast is
+        // short-lived, and a stream of them would hide the export's own.
+        const mark = PROGRESS_MARKS.filter(value => percent >= value && !announced.has(value)).pop();
+        if (mark !== undefined) {
+          for (const value of PROGRESS_MARKS) if (value <= mark) announced.add(value);
+          say(`渲染中 ${percent}%`);
+        }
+      }
+    } catch (error) {
+      if (error instanceof TimelineConflictError) this.applyState(error.current);
+      if (isAbort(error)) say('没有下载渲染程序，这次没有渲染');
+      else say(`渲染失败：${describeRefusal(error)}`, 'error');
+    } finally {
+      this.rendering = false;
+    }
+  }
+
+  /**
+   * Asked when the export panel opens: the plugin's own refusals against the
+   * cut as saved, so "cannot render" is written beside the button instead of
+   * discovered after pressing it. A missing ffmpeg the plugin can download is
+   * not a refusal: pressing the button offers the download.
+   */
+  async checkRender(settings: VideoEditorRenderRequestSettings): Promise<VideoEditorRenderCheck> {
+    const check = this.options.api.checkRender;
+    if (!check) return { ok: true, reasons: [] };
+    try {
+      await this.drainSaves();
+      await check({ ...renderRequestOf(settings), baseRevision: this.revision });
+      return { ok: true, reasons: [] };
+    } catch (error) {
+      if (error instanceof TimelineConflictError) {
+        this.applyState(error.current);
+        return { ok: true, reasons: [] };
+      }
+      if (offeredRenderer(error) !== null && this.options.obtainRenderer) return { ok: true, reasons: [] };
+      return { ok: false, reasons: [describeRefusal(error)] };
+    }
   }
 
   dispose(): void {

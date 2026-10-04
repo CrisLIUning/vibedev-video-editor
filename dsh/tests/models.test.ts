@@ -177,6 +177,28 @@ describe('the plugin\'s answers', () => {
     answering(409, 'not json');
     await expect(api.saveTimeline({}, 3)).rejects.toMatchObject({ code: 'CANVAS_TIMELINE_CONFLICT_UNREADABLE' });
   });
+
+  it('keeps what a refusal carries besides its message, for the page to act on', async () => {
+    answering(503, { error: 'no ffmpeg', code: 'FFMPEG_UNAVAILABLE', detail: { downloadable: true, modelId: 'ffmpeg-win64-gpl-shared-9.0', totalBytes: 86_333_540 } });
+    await expect(api.renderTimeline({ frameRate: 30 })).rejects.toMatchObject({
+      code: 'FFMPEG_UNAVAILABLE',
+      extra: { detail: { downloadable: true, modelId: 'ffmpeg-win64-gpl-shared-9.0', totalBytes: 86_333_540 } },
+    });
+    answering(409, { error: 'consent', code: 'VIDEO_EDITOR_MODEL_CONSENT_REQUIRED', modelIds: ['whisper-small-q8', 'silero-vad'] });
+    await expect(api.startTranscription({ baseRevision: 1, requestId: 'r' })).rejects.toMatchObject({ extra: { modelIds: ['whisper-small-q8', 'silero-vad'] } });
+  });
+
+  it('asks for a render check with `check`, and long-polls a task', async () => {
+    const fetch = answering(200, { ok: true });
+    await api.checkRender({ frameRate: 24, resolution: '1080', baseRevision: 3 });
+    let [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url, 'http://host.test').searchParams.get('path')).toBe('/api/canvas/timelines/film-1/render?project=film-1');
+    expect(JSON.parse(String(init.body))).toEqual({ frameRate: 24, resolution: '1080', baseRevision: 3, check: true });
+    await api.waitTask('timeline_1', 4, 25_000);
+    [url, init] = fetch.mock.calls[1] as unknown as [string, RequestInit];
+    expect(new URL(url, 'http://host.test').searchParams.get('path')).toBe('/api/media/tasks/timeline_1/wait');
+    expect(JSON.parse(String(init.body))).toEqual({ since: 4, timeoutMs: 25_000 });
+  });
 });
 
 describe('the question', () => {
@@ -193,6 +215,20 @@ describe('the question', () => {
     expect(group).toBeNull();
     expect(formatBytes(2048)).toBe('2 KB');
     expect(formatBytes(1.5 * 1024 ** 3)).toBe('1.50 GB');
+  });
+
+  it('says the renderer is a separate program under its own licence', () => {
+    const renderer: ModelListing = {
+      id: 'ffmpeg-win64-gpl-shared-9.0', label: 'FFmpeg 9.0', capability: 'renderer', revision: '46d8f462ee',
+      license: { name: 'GPL-2.0-or-later', notice: 'FFmpeg is free software; source: https://github.com/BtbN/FFmpeg-Builds' },
+      totalBytes: 86_333_540, sourceHosts: ['vibedev.jzsaas.com', 'github.com'], artifacts: [{ id: 'archive', fileName: 'ffmpeg.zip', bytes: 86_333_540 }],
+    };
+    const { root } = consentDialog(document, renderer);
+    expect(root.querySelector('h2')?.textContent).toBe('下载渲染程序');
+    expect(root.textContent).toContain('才能在本机把剪辑渲染成视频。它是一个单独的程序，不是 AI 模型');
+    expect(root.textContent).toContain('82.3 MB');
+    expect(root.textContent).toContain('GPL-2.0-or-later');
+    expect(root.textContent).toContain('vibedev.jzsaas.com、github.com');
   });
 
   it('answers yes with the group, and no on Esc', async () => {

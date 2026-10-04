@@ -3,6 +3,11 @@
  * page in the 剪辑台 tab of the right sidebar (`apps/editor/index.html?cwd=
  * &project=&theme=`), and it mounts the editor bundle (`video-editor.js`,
  * beside it) on the workspace's cut.
+ *
+ * Two of the editor's buttons hand work to the plugin instead of the tab:
+ * CC submits a background recognition (`captions.ts`, run by the hidden
+ * `caption-runner.html` or the gateway), and 渲染到项目 has the plugin render
+ * the cut with ffmpeg (`session.ts`). Both outlive this page.
  */
 
 import type {
@@ -12,6 +17,7 @@ import type {
 } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import * as api from './api.ts';
 import { installHostAdapter, projectId, toHostUrl, workspace } from './address.ts';
+import { createCaptionFlow } from './captions.ts';
 import { createConsentPrompt } from './consent.ts';
 import { createModelAccess } from './models.ts';
 import { createCapabilityRuntime } from './runtime.ts';
@@ -60,6 +66,12 @@ async function main(): Promise<void> {
     showStatus('这个工作区还没有影视项目，请先在“开始”页新建。');
     return;
   }
+  let editor: MountedVideoEditor | null = null;
+  const notify = (message: string, tone: NoticeTone = 'info'): void => {
+    if (editor?.notify) editor.notify({ message, tone });
+    else if (tone === 'error') showBanner(message);
+  };
+  const models = createModelAccess(api, createConsentPrompt());
   const session = new TimelineSession({
     api,
     boardId: project.id || projectId,
@@ -67,12 +79,34 @@ async function main(): Promise<void> {
     title: project.title,
     aspect: project.aspectRatio,
     onSaveError: showBanner,
+    notify,
+    // The renderer is downloaded like a model: asked about first, then
+    // fetched and verified by the plugin, which reports progress here.
+    obtainRenderer: async (modelId) => {
+      await models.ensureModelConsent(modelId);
+      let shown = -1;
+      await models.prepareModel({
+        modelId,
+        onProgress: ({ progress }) => {
+          const quarter = Math.floor(progress / 25) * 25;
+          if (quarter > shown && quarter < 100) {
+            shown = quarter;
+            notify(`正在下载渲染程序 ${Math.round(progress)}%`);
+          }
+        },
+      });
+    },
   });
-  let editor: MountedVideoEditor | null = null;
-  const notify = (message: string, tone: NoticeTone = 'info'): void => {
-    if (editor?.notify) editor.notify({ message, tone });
-    else if (tone === 'error') showBanner(message);
-  };
+  // Original-audio captions: a background task of the plugin, a panel and a review here.
+  const captions = createCaptionFlow({
+    host: api,
+    ensureModelConsent: (modelId, signal) => models.ensureModelConsent(modelId, signal),
+    prepareTimeline: () => session.prepareTimeline(),
+    adoptTimeline: state => session.adopt(state),
+    reloadTimeline: () => session.reloadTimeline(),
+    timelineDocument: () => session.document,
+    notify,
+  });
   const runtime = Object.assign(createCapabilityRuntime({
     uploadFile: api.uploadFile,
     importWorkspaceFile: api.importWorkspaceFile,
@@ -81,8 +115,14 @@ async function main(): Promise<void> {
     prepareTimeline: () => session.prepareTimeline(),
     onTimelineChanged: () => session.reloadTimeline(),
     onAssetsChanged: () => session.refreshMaterial(),
-  }), createModelAccess(api, createConsentPrompt()));
+    transcribeTimeline: captions.transcribeTimeline,
+  }), models);
   const hostActions: VideoEditorHostActions = {
+    renderToProject: {
+      label: '渲染到项目',
+      hint: '用上面的文件名和分辨率，在本机把当前剪辑渲染进 film/canvas/renders/，并放上分镜画布',
+      check: settings => session.checkRender(settings),
+    },
     keepExport: {
       hint: '导出的文件存进项目的 film/canvas/renders/ 并放上分镜画布，不下载到本地',
       keep: files => session.keepExport(files, notify),
@@ -171,6 +211,8 @@ async function main(): Promise<void> {
   window.addEventListener('pagehide', () => {
     events.close();
     runtime.dispose();
+    // Leaving only stops listening: recognitions go on in the plugin.
+    captions.dispose();
     void session.drainSaves().catch(() => undefined);
   });
 }

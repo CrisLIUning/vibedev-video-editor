@@ -111,6 +111,13 @@ describe('capability runtime', () => {
     expect((completion.documentResult as { artifacts: Array<{ sha256: string }> }).artifacts[0]!.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('hands the CC buttons to the host\'s background recognition, and has none without it', async () => {
+    const transcribeTimeline = vi.fn(async () => ({ segments: [], text: '', backgroundTaskId: 'asr-1' }));
+    expect(createCapabilityRuntime(fakeHost().host).transcribeTimeline).toBeUndefined();
+    const runtime = createCapabilityRuntime(fakeHost({ transcribeTimeline }).host);
+    expect(await runtime.transcribeTimeline!({ language: 'zh', onProgress: () => {} })).toEqual({ segments: [], text: '', backgroundTaskId: 'asr-1' });
+  });
+
   it('aborts a cancelled task and refuses to complete it', async () => {
     const { host } = fakeHost();
     const runtime = createCapabilityRuntime(host);

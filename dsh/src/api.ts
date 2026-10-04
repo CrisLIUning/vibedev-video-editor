@@ -29,11 +29,16 @@ export class TimelineConflictError extends Error {
   }
 }
 
-/** A refusal from the plugin, with its code when it gave one. */
+/**
+ * A refusal from the plugin, with its code when it gave one and the rest of
+ * its answer in `extra` — the fields a refusal carries for the page to act on
+ * (`detail` of a render refusal, `modelIds` of a consent refusal, `taskId` of
+ * a busy renderer).
+ */
 export class HostRequestError extends Error {
   override name = 'HostRequestError';
 
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly extra: Record<string, unknown> = {}) {
     super(message);
   }
 }
@@ -73,7 +78,7 @@ const projectQuery = `?project=${encodeURIComponent(projectId)}`;
 
 async function reply<T>(response: Response, label: string): Promise<T> {
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { current?: TimelineState; error?: unknown; code?: unknown } | null;
+    const payload = await response.json().catch(() => null) as { current?: TimelineState; error?: unknown; code?: unknown; [field: string]: unknown } | null;
     const error = payload?.error;
     const code = typeof payload?.code === 'string'
       ? payload.code
@@ -92,7 +97,11 @@ async function reply<T>(response: Response, label: string): Promise<T> {
       : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
         ? (error as { message: string }).message
         : `${label} (${response.status})`;
-    throw new HostRequestError(message, response.status, code);
+    const extra: Record<string, unknown> = {};
+    if (payload !== null && typeof payload === 'object') {
+      for (const [field, value] of Object.entries(payload)) if (field !== 'error' && field !== 'code') extra[field] = value;
+    }
+    throw new HostRequestError(message, response.status, code, extra);
   }
   return await response.json() as T;
 }
@@ -301,3 +310,148 @@ export const cancelModelTask = (taskId: string): Promise<unknown> =>
 export function modelFileUrl(modelId: string, revision: string, artifactId: string): string {
   return new URL(`models/${modelId}/${revision}/${artifactId}`, pluginRoot()).href;
 }
+
+/** A media task as the plugin's long-poll answers it (`/api/media/tasks/:id/wait`). */
+export interface TaskSnapshot<File = Record<string, unknown>> {
+  taskId: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'interrupted';
+  startedAt: number;
+  endedAt: number | null;
+  progress: string[];
+  nextSince: number;
+  file?: File;
+  error?: { code?: string; message: string } | null;
+}
+
+/** One long-poll step: answers at once when the task ended or has progress after `since`. */
+export const waitTask = <File = Record<string, unknown>>(taskId: string, since: number, timeoutMs: number, signal?: AbortSignal): Promise<TaskSnapshot<File>> =>
+  studio(`/api/media/tasks/${encodeURIComponent(taskId)}/wait`, '读取任务进度', { method: 'POST', json: { since, timeoutMs }, ...(signal ? { signal } : {}) });
+
+/** Stop a media task; a task that already ended stays as it ended. */
+export const cancelTask = (taskId: string): Promise<unknown> =>
+  studio(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`, '取消任务', { method: 'POST', json: {} });
+
+export type CaptionEngineId = 'whisper' | 'gateway';
+
+/** What can recognize speech for this film, as `captions/engines` answers. */
+export interface CaptionEngines {
+  default: CaptionEngineId;
+  engines: Array<
+    | { id: 'whisper'; available: boolean; reason?: string; consent: Record<string, boolean>; downloadBytes: number; runner: 'connected' | 'none' }
+    | { id: 'gateway'; available: boolean; reason?: string; languages: string[]; model?: string; limits: { maxSeconds: number; maxBytes: number } }
+  >;
+}
+
+export interface TranscribeBody {
+  baseRevision: number;
+  requestId: string;
+  clipIds?: string[];
+  range?: { start: number; end: number };
+  language?: string;
+  engine?: CaptionEngineId;
+  spendingConfirmed?: boolean;
+}
+
+export interface TranscriptionStarted {
+  taskId: string;
+  status: string;
+  engine?: CaptionEngineId;
+  model?: string;
+  estimate?: { seconds: number; amountCny?: number; basis: string };
+}
+
+/** One recognition task of this film; `progress` and `error` when the plugin includes them. */
+export interface CaptionTaskSummary {
+  taskId: string;
+  status: TaskSnapshot['status'];
+  engine?: CaptionEngineId;
+  model?: string;
+  startedAt: number;
+  endedAt?: number | null;
+  applied: boolean;
+  segments?: number;
+  ranges?: Array<{ start: number; end: number }>;
+  progress?: string[];
+  error?: { code?: string; message: string } | null;
+}
+
+/** One line of a recognition draft: timeline seconds, and where it came from in the original audio. */
+export interface CaptionDraftSegment {
+  id: string;
+  text: string;
+  warnings?: string[];
+  start: number;
+  end: number;
+  sourceClipId: string;
+  sourceIn: number;
+  sourceOut: number;
+}
+
+/** An unreviewed recognition draft (Studio's `TimelineCaptionDraft`, plus the engine). */
+export interface CaptionDraft {
+  kind: 'timeline-caption-draft';
+  schemaVersion: 1;
+  baseRevision: number;
+  model: string;
+  engine?: CaptionEngineId;
+  reviewStatus: 'unreviewed';
+  ranges: Array<{ start: number; end: number }>;
+  sources: Array<{ clipId: string; track?: string; file: string; start: number; end: number; sourceIn: number; sourceOut: number }>;
+  segments: CaptionDraftSegment[];
+}
+
+export const getCaptionEngines = (): Promise<CaptionEngines> =>
+  studio(`/api/canvas/timelines/${board}/captions/engines${projectQuery}`, '读取识别方式');
+
+/** Start recognizing the saved cut's original audio in the background. */
+export const startTranscription = (body: TranscribeBody): Promise<TranscriptionStarted> =>
+  studio(`/api/canvas/timelines/${board}/transcribe${projectQuery}`, '提交字幕识别', { method: 'POST', json: body });
+
+export const listCaptionTasks = (signal?: AbortSignal): Promise<{ tasks: CaptionTaskSummary[] }> =>
+  studio(`/api/canvas/timelines/${board}/captions/tasks${projectQuery}`, '读取字幕识别任务', signal ? { signal } : {});
+
+/** Write a reviewed draft's captions into its ranges; `dryRun` only checks. */
+export const applyCaptions = async (body: { taskId: string; reviewed: boolean; dryRun: boolean; excludeSegmentIds?: string[] }): Promise<CommandResult> =>
+  (await studio<{ result: CommandResult }>(`/api/canvas/timelines/${board}/captions/apply${projectQuery}`, '写入字幕', { method: 'POST', json: body })).result;
+
+export interface RenderBody {
+  baseRevision?: number;
+  frameRate?: 24 | 30 | 60;
+  resolution?: '720' | '1080' | '1440' | '2160';
+  fileName?: string;
+}
+
+export interface RenderCheck {
+  ok: true;
+  width: number;
+  height: number;
+  frameRate: number;
+  durationSeconds: number;
+  hasAudio: boolean;
+  targetLoudnessLufs?: number;
+  outputPath: string;
+}
+
+/** The file a finished render task carries (`name` is relative to `film/`). */
+export interface RenderedFile {
+  name: string;
+  size: number;
+  kind: 'video';
+  mime: string;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  frameRate: number;
+  hasAudio: boolean;
+  loudnessLufs?: number;
+  sha256: string;
+  landedNodeId?: string | null;
+}
+
+/** Have the plugin render the saved cut with ffmpeg into `film/canvas/renders/`; follow the task with `waitTask`. */
+export const renderTimeline = (body: RenderBody): Promise<{ taskId: string }> =>
+  studio(`/api/canvas/timelines/${board}/render${projectQuery}`, '提交渲染', { method: 'POST', json: body });
+
+/** Would the plugin render this cut? The same refusals as a render, no task, no file. */
+export const checkRender = (body: RenderBody): Promise<RenderCheck> =>
+  studio(`/api/canvas/timelines/${board}/render${projectQuery}`, '检查渲染', { method: 'POST', json: { ...body, check: true } });
