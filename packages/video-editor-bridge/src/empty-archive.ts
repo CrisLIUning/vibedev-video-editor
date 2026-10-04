@@ -34,3 +34,29 @@ export function isTimelineArchive(value: unknown): value is JsonObject {
     && archive.version === 3
     && !!archive.project && typeof archive.project === 'object' && !Array.isArray(archive.project);
 }
+
+/** Where a project keeps the clips of each of the engine's tracks (its `TRACK_COLLECTIONS`). */
+const CLIP_COLLECTIONS = [
+  'visualSegments',
+  'visualOverlaySegments',
+  'audioSegments',
+  'musicSegments',
+  'captionSegments',
+  'stickerSegments',
+] as const;
+
+/**
+ * Whether a cut has nothing on it: no document yet (`null`), or an archive
+ * with no clip on any track — a caption or a sticker counts as a clip. A
+ * document that is not an archive is not called empty: what it holds is
+ * unknown.
+ */
+export function isEmptyTimeline(document: unknown): boolean {
+  if (document === null || document === undefined) return true;
+  if (!isTimelineArchive(document)) return false;
+  const project = document.project as Record<string, unknown>;
+  return CLIP_COLLECTIONS.every((key) => {
+    const clips = project[key];
+    return !Array.isArray(clips) || clips.length === 0;
+  });
+}

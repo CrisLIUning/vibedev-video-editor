@@ -7,5 +7,5 @@ export * from './upstream-render-plan.js';
 export * from './commands/diff.js';
 export * from './commands/execute.js';
 export * from './commands/registry.js';
-export { createEmptyTimelineArchive, isTimelineArchive } from './empty-archive.js';
+export { createEmptyTimelineArchive, isEmptyTimeline, isTimelineArchive } from './empty-archive.js';
 export { getTimelineSourceTime, getTimelineLocalTime } from './timeline-source-time.js';

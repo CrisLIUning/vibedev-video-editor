@@ -158,20 +158,92 @@ describe('the material in the library', () => {
 });
 
 describe('the film changing', () => {
-  it('shows a renamed film and its new aspect in the open editor', async () => {
-    const { api } = fakeApi(() => ({ assets: [], projectFiles: [] }));
+  const tracks = { visualSegments: [], visualOverlaySegments: [], audioSegments: [], musicSegments: [], captionSegments: [] };
+  const emptyCut = { format: 'timeline-studio-archive', version: 3, project: { ratioId: '16:9', ...tracks } };
+  const cutWith = (track: string, clip: Record<string, unknown>) =>
+    ({ format: 'timeline-studio-archive', version: 3, project: { ratioId: '16:9', ...tracks, [track]: [clip] } });
+  const shot = { id: 'v1', type: 'video', assetId: 'canvas-file:canvas/media/a.mp4', duration: 4 };
+
+  async function openOn(document: unknown) {
+    const { api } = fakeApi(() => ({ assets: [], projectFiles: [] }), { getTimeline: async () => state(3, document) });
     const session = open(api);
     const { editor, documents } = fakeEditor();
     await session.load();
     session.attach(editor);
-    session.setProject({ title: '雨夜（终版）', aspect: '9:16' });
-    expect(documents.at(-1)).toMatchObject({ projectTitle: '雨夜（终版）', projectAspect: '9:16' });
+    return { session, documents };
+  }
+
+  it('shows a renamed film in the open editor, whatever the cut holds', async () => {
+    const { session, documents } = await openOn(cutWith('visualSegments', shot));
     session.setProject({ title: '雨夜（终版）' });
     expect(documents).toHaveLength(1);
-    // A stored aspect the editor cannot draw leaves the editor's ratio alone.
-    session.setProject({ aspect: '4:3' });
-    expect(documents.at(-1)?.projectTitle).toBe('雨夜（终版）');
-    expect(documents.at(-1)?.projectAspect).toBeUndefined();
+    expect(documents[0]).toMatchObject({ projectTitle: '雨夜（终版）', projectAspect: '16:9', upstreamDocument: cutWith('visualSegments', shot) });
+    session.setProject({ title: '雨夜（终版）' });
+    expect(documents).toHaveLength(1);
+  });
+
+  it('gives a cut with nothing on it yet the film\'s new frame', async () => {
+    const uncut = await openOn(null);
+    uncut.session.setProject({ title: '雨夜（终版）', aspect: '9:16' });
+    expect(uncut.documents.at(-1)).toMatchObject({ projectTitle: '雨夜（终版）', projectAspect: '9:16', upstreamDocument: { project: { ratioId: '9:16' } } });
+
+    // A saved cut whose clips were all taken off is as empty as no cut.
+    const cleared = await openOn(emptyCut);
+    cleared.session.setProject({ aspect: '9:16' });
+    expect(cleared.documents.at(-1)).toMatchObject({ projectTitle: '雨夜', projectAspect: '9:16', upstreamDocument: emptyCut });
+    // A frame the editor cannot draw leaves the editor's ratio alone.
+    cleared.session.setProject({ aspect: '4:3' });
+    expect(cleared.documents.at(-1)?.projectAspect).toBeUndefined();
+  });
+
+  it('keeps the frame of a cut that has clips: the film\'s frame is for cuts not made yet', async () => {
+    const clips: Array<[string, Record<string, unknown>]> = [
+      ['visualSegments', shot],
+      ['visualOverlaySegments', { id: 'o1', start: 0, duration: 2 }],
+      ['audioSegments', { id: 'a1', start: 0, duration: 2 }],
+      ['musicSegments', { id: 'm1', start: 0, duration: 9 }],
+      ['captionSegments', { id: 'c1', start: 0, end: 2, text: '雨' }],
+      ['stickerSegments', { id: 's1', start: 0, duration: 2 }],
+    ];
+    for (const [track, clip] of clips) {
+      const { session, documents } = await openOn(cutWith(track, clip));
+      session.setProject({ title: '雨夜（终版）', aspect: '9:16' });
+      expect(documents, track).toHaveLength(1);
+      expect(documents[0], track).toMatchObject({ projectTitle: '雨夜（终版）', projectAspect: '16:9', upstreamDocument: cutWith(track, clip) });
+      // A frame change alone has nothing to show this cut.
+      session.setProject({ aspect: '1:1' });
+      expect(documents, track).toHaveLength(1);
+    }
+  });
+
+  it('weighs a frame that came during a save against the cut as saved: the edit may be the cut\'s first clip', async () => {
+    vi.useFakeTimers();
+    try {
+      let finishSave: (() => void) | undefined;
+      let stored = state(0, null);
+      const { api } = fakeApi(() => ({ assets: [], projectFiles: [] }), {
+        getTimeline: async () => stored,
+        saveTimeline: (document) => new Promise((resolve) => {
+          finishSave = () => { stored = state(1, document); resolve(stored); };
+        }),
+      });
+      const session = open(api);
+      const { editor, documents } = fakeEditor();
+      await session.load();
+      session.attach(editor);
+      session.handleEvent({ type: 'dirty', baseRevision: 0 });
+      session.handleEvent({ type: 'save-request', baseRevision: 0, upstreamDocument: cutWith('visualSegments', shot) });
+      session.setProject({ title: '新片名', aspect: '9:16' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(documents).toHaveLength(0);
+      finishSave!();
+      await session.drainSaves();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(documents.at(-1)).toMatchObject({ projectTitle: '新片名', upstreamDocument: cutWith('visualSegments', shot) });
+      for (const document of documents) expect(document.projectAspect).toBe('16:9');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('waits while an edit is being saved', async () => {

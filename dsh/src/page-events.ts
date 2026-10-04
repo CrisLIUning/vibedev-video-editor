@@ -6,7 +6,8 @@
  * - `file-changed` — an agent's edit, a generation landing: the cut and the
  *   material are read again.
  * - `project-changed` — the film was renamed or given another aspect: the
- *   editor shows the new title and, when it can draw it, the new aspect.
+ *   editor shows the new title; the new aspect is for cuts not made yet, so
+ *   it reaches only a cut with nothing on it, when the editor can draw it.
  * - the page shown again or focused — files the person put into the
  *   workspace from outside DSH raise no event, so the material is read again
  *   whenever they may have come back from doing that (debounced).

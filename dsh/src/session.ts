@@ -29,7 +29,7 @@ import type {
   VideoEditorVoiceOutcome,
 } from '../../packages/video-editor-bridge/src/host-contract.ts';
 import { HOST_PROJECT_ASPECTS } from '../../packages/video-editor-bridge/src/host-contract.ts';
-import { createEmptyTimelineArchive } from '../../packages/video-editor-bridge/src/empty-archive.ts';
+import { createEmptyTimelineArchive, isEmptyTimeline } from '../../packages/video-editor-bridge/src/empty-archive.ts';
 import { HostRequestError, TimelineConflictError } from './api.ts';
 import type { Material, PlacedClip, RenderBody, RenderCheck, RenderedFile, SoundPlaced, TaskSnapshot, TimelineState, UploadedFile } from './api.ts';
 import { describeRefusal } from './refusals.ts';
@@ -202,6 +202,8 @@ export class TimelineSession {
 
   private title: string;
   private aspect: string | undefined;
+  /** The film's frame as last announced, not yet weighed against the cut (see `setProject`). */
+  private offeredAspect: string | undefined;
   private readonly imports = new Map<string, ImportRecord>();
   private truncationShown = false;
   private editor: MountedVideoEditor | null = null;
@@ -324,19 +326,39 @@ export class TimelineSession {
   }
 
   /**
-   * The film was renamed or given another aspect (`project-changed`): the
-   * editor shows the new title, and takes the new aspect when it can draw it
-   * (the bridge adopts a ratio only when the host changes it). Waits while
-   * an edit is being saved, as a material refresh does.
+   * The film was renamed or given another frame (`project-changed`). The
+   * editor shows the new title whatever the cut holds. The frame is the
+   * film's choice for cuts not made yet, so it reaches the editor only while
+   * the cut has nothing on it (and only a frame the editor can draw; the
+   * bridge adopts a ratio only when the host changes it). A cut with clips
+   * keeps its own frame: taking the film's would re-shape the cut and save
+   * it, which the film's change never asked for — with the editor closed
+   * the cut stays as it was.
+   *
+   * While an edit is being saved, or the cut is about to be read again, the
+   * change waits, as a material refresh does, and the frame is weighed
+   * against the cut as read then: the edit in flight may be its first clip.
    */
   setProject(change: ProjectChange): void {
-    const title = change.title ?? this.title;
-    const aspect = change.aspect ?? this.aspect;
-    if (title === this.title && aspect === this.aspect) return;
-    this.title = title;
-    this.aspect = aspect;
-    if (this.busy) this.requestExternalRefresh();
-    else this.publish();
+    const { title, aspect } = change;
+    const renamed = title !== undefined && title !== this.title;
+    if (renamed) this.title = title;
+    if (aspect !== undefined) this.offeredAspect = aspect;
+    if (this.busy || this.externalPending) {
+      if (renamed || this.offeredAspect !== undefined) this.requestExternalRefresh();
+      return;
+    }
+    const reframed = this.takeOfferedAspect();
+    if (renamed || reframed) this.publish();
+  }
+
+  /** Take the film's announced frame when the cut has nothing on it; whether the editor's frame changed. */
+  private takeOfferedAspect(): boolean {
+    const offered = this.offeredAspect;
+    this.offeredAspect = undefined;
+    if (offered === undefined || offered === this.aspect || !isEmptyTimeline(this.document)) return false;
+    this.aspect = offered;
+    return true;
   }
 
   /** The editor's events. History handlers return a promise the editor waits for. */
@@ -483,10 +505,12 @@ export class TimelineSession {
           return;
         }
         if (state.revision > this.revision) {
-          this.applyState(state);
-        } else {
-          this.publish();
+          this.document = state.document;
+          this.revision = state.revision;
         }
+        // A frame the film announced meanwhile is weighed against the cut as just read.
+        this.takeOfferedAspect();
+        this.publish();
       }).catch((error: unknown) => { this.options.onSaveError?.(`刷新失败：${message(error)}`); });
     }, 120);
   }
