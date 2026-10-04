@@ -200,13 +200,14 @@ describe('the plugin\'s answers', () => {
     expect(JSON.parse(String(init.body))).toEqual({ since: 4, timeoutMs: 25_000 });
   });
 
-  it('asks for a recognition\'s estimate on the transcribe route with `estimateOnly`', async () => {
-    const fetch = answering(200, { estimate: { seconds: 150, amountCny: 0.13, basis: 'catalogue' }, engine: 'gateway' });
-    await expect(api.estimateTranscription({ engine: 'gateway', language: 'zh', clipIds: ['v1'], baseRevision: 3, requestId: 'r' })).resolves.toEqual({ estimate: { seconds: 150, amountCny: 0.13, basis: 'catalogue' }, engine: 'gateway' });
+  it('submits a recognition on the transcribe route with only the request it was given', async () => {
+    const fetch = answering(202, { taskId: 'asr-1', status: 'queued' });
+    const range = { start: 2, end: 5 };
+    await expect(api.startTranscription({ language: 'zh', clipIds: ['v1'], range, baseRevision: 3, requestId: 'r' })).resolves.toEqual({ taskId: 'asr-1', status: 'queued' });
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(new URL(url, 'http://host.test').searchParams.get('path')).toBe('/api/canvas/timelines/film-1/transcribe?project=film-1');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(String(init.body))).toEqual({ engine: 'gateway', language: 'zh', clipIds: ['v1'], baseRevision: 3, requestId: 'r', estimateOnly: true });
+    expect(JSON.parse(String(init.body))).toEqual({ language: 'zh', clipIds: ['v1'], range, baseRevision: 3, requestId: 'r' });
   });
 });
 

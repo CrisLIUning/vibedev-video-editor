@@ -62,18 +62,19 @@ describe('the caption runner page', () => {
     expect(posts.at(-1)).toEqual({ route: 'result', body: { runnerId: 'runner-7', jobId: 'job-1', result } });
   });
 
-  it('extracts speech regions for an extract job', async () => {
-    const { fetch, posts } = fakeRoutes({ claim: () => new Response(JSON.stringify({ ...job, kind: 'extract' })) });
-    const regions = [{ sourceClipId: 'v1', regions: [{ start: 2.5, end: 4, wav: 'UklGRg==' }] }];
-    const editor: RunnerEditorModule = { transcribeTimelineSources: vi.fn(), extractTimelineAudio: vi.fn(async () => regions) };
-    expect(await runCaptionJob({ ...base, fetch, loadEditor: async () => editor })).toBe('done');
-    expect(editor.transcribeTimelineSources).not.toHaveBeenCalled();
-    expect(posts.at(-1)?.body.result).toEqual(regions);
+  it('runs only Whisper: a job of another kind fails, said so, without loading the editor', async () => {
+    const { fetch, posts } = fakeRoutes({ claim: () => new Response(JSON.stringify({ ...job, kind: 'translate' })) });
+    const loadEditor = vi.fn(async () => ({ transcribeTimelineSources: vi.fn() }));
+    expect(await runCaptionJob({ ...base, fetch, loadEditor })).toBe('failed');
+    expect(loadEditor).not.toHaveBeenCalled();
+    expect(String(posts.at(-1)?.body.error)).toMatch(/^CAPTION_RUNTIME_FAILED: .*translate/);
 
-    // A bundle without the extraction says so instead of hanging.
-    const old = fakeRoutes({ claim: () => new Response(JSON.stringify({ ...job, kind: 'extract' })) });
-    expect(await runCaptionJob({ ...base, fetch: old.fetch, loadEditor: async () => ({ transcribeTimelineSources: vi.fn() }) })).toBe('failed');
-    expect(String(old.posts.at(-1)?.body.error)).toMatch(/^CAPTION_RUNTIME_FAILED: /);
+    // A claim that names no kind is a Whisper job.
+    const { kind: _kind, ...unnamed } = job;
+    const plain = fakeRoutes({ claim: () => new Response(JSON.stringify(unnamed)) });
+    const transcribe = vi.fn<RunnerEditorModule['transcribeTimelineSources']>(async () => []);
+    expect(await runCaptionJob({ ...base, fetch: plain.fetch, loadEditor: async () => ({ transcribeTimelineSources: transcribe }) })).toBe('done');
+    expect(transcribe).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when another window claimed the job', async () => {

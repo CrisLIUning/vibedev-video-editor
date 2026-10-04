@@ -64,4 +64,4 @@ const runtime = createVideoEditorRuntime({
 });
 
 export const mountVideoEditor = runtime.mountVideoEditor;
-export { extractTimelineAudio, transcribeTimelineSources } from './transcription-runtime.ts';
+export { transcribeTimelineSources } from './transcription-runtime.ts';

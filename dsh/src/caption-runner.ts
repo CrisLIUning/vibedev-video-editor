@@ -9,9 +9,8 @@
  *
  *   1. claim the job (`POST /api/dsh-film/caption-runner/claim`); 409 means
  *      another window took it, and this page has nothing to do;
- *   2. load `video-editor.js` from its own folder and run the job —
- *      `transcribeTimelineSources` for Whisper, `extractTimelineAudio` for the
- *      gateway's speech regions;
+ *   2. load `video-editor.js` from its own folder and run Whisper on the job
+ *      (`transcribeTimelineSources`);
  *   3. report progress about every 250 ms (`…/progress`), stopping when the
  *      answer says the task was cancelled;
  *   4. post the result or the error (`…/result`); a result the plugin does
@@ -24,11 +23,7 @@
  * so the frame can go.
  */
 
-import type {
-  CaptionJobInput,
-  TimelineSourceExtraction,
-  TimelineSourceRecognition,
-} from '../../packages/video-editor-bridge/src/caption-regions.ts';
+import type { CaptionJobInput, TimelineSourceRecognition } from '../../packages/video-editor-bridge/src/caption-job.ts';
 import { pluginRoot } from './address.ts';
 
 type Progress = (update: { progress: number; phase: string }) => void;
@@ -36,14 +31,12 @@ type Progress = (update: { progress: number; phase: string }) => void;
 /** What the runner uses from the editor bundle (`editor-entry.jsx`). */
 export interface RunnerEditorModule {
   transcribeTimelineSources(input: CaptionJobInput, onProgress: Progress, signal: AbortSignal): Promise<TimelineSourceRecognition[]>;
-  /** Absent in bundles built before region extraction existed. */
-  extractTimelineAudio?(input: CaptionJobInput, onProgress: Progress, signal: AbortSignal): Promise<TimelineSourceExtraction[]>;
 }
 
 /** The job as the claim answers it. */
 export interface CaptionRunnerJob extends CaptionJobInput {
   jobId: string;
-  kind: 'whisper' | 'extract';
+  kind: 'whisper';
 }
 
 /** How a job ended for this page. */
@@ -147,15 +140,13 @@ export async function runCaptionJob(options: RunnerOptions): Promise<RunnerOutco
 
   try {
     controller.signal.throwIfAborted();
+    // The page runs Whisper and nothing else: a job that names another kind
+    // fails here, said so, instead of having Whisper's answer posted for it.
+    const kind = (job as { kind?: unknown }).kind;
+    if (kind !== undefined && kind !== 'whisper') throw new Error(`CAPTION_RUNTIME_FAILED: 识别页只跑本机 Whisper 识别，不认识任务类型 ${String(kind)}`);
     const editor = await options.loadEditor();
     const input: CaptionJobInput = { sources: job.sources, artifacts: job.artifacts ?? {}, language: job.language };
-    let result: TimelineSourceRecognition[] | TimelineSourceExtraction[];
-    if (job.kind === 'extract') {
-      if (typeof editor.extractTimelineAudio !== 'function') throw new Error('CAPTION_RUNTIME_FAILED: 剪辑台页面没有人声提取（extractTimelineAudio），请更新 dsh-film');
-      result = await editor.extractTimelineAudio(input, onProgress, controller.signal);
-    } else {
-      result = await editor.transcribeTimelineSources(input, onProgress, controller.signal);
-    }
+    const result = await editor.transcribeTimelineSources(input, onProgress, controller.signal);
     if (cancelled) return 'cancelled';
     clearInterval(ticker);
     // Done only when the plugin took the result; a refused one (too large, a

@@ -331,15 +331,14 @@ export const waitTask = <File = Record<string, unknown>>(taskId: string, since: 
 export const cancelTask = (taskId: string): Promise<unknown> =>
   studio(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`, '取消任务', { method: 'POST', json: {} });
 
-export type CaptionEngineId = 'whisper' | 'gateway';
-
-/** What can recognize speech for this film, as `captions/engines` answers. */
+/**
+ * Whether this film's speech can be recognized, as `captions/engines` answers:
+ * Whisper on this machine — whether it can run now, which of its models the
+ * person agreed to download, and whether a DSH window can host its runner.
+ */
 export interface CaptionEngines {
-  default: CaptionEngineId;
-  engines: Array<
-    | { id: 'whisper'; available: boolean; reason?: string; consent: Record<string, boolean>; downloadBytes: number; runner: 'connected' | 'none' }
-    | { id: 'gateway'; available: boolean; reason?: string; languages: string[]; model?: string; limits: { maxSeconds: number; maxBytes: number }; consent?: Record<string, boolean> }
-  >;
+  default: 'whisper';
+  engines: Array<{ id: 'whisper'; available: boolean; reason?: string; consent: Record<string, boolean>; downloadBytes: number; runner: 'connected' | 'none' }>;
 }
 
 export interface TranscribeBody {
@@ -348,36 +347,18 @@ export interface TranscribeBody {
   clipIds?: string[];
   range?: { start: number; end: number };
   language?: string;
-  engine?: CaptionEngineId;
-  spendingConfirmed?: boolean;
-}
-
-/** What the plugin estimates a recognition sends and costs: source seconds at most, their price, and what the price is based on. */
-export interface CaptionEstimate {
-  seconds: number;
-  amountCny?: number;
-  basis: string;
 }
 
 export interface TranscriptionStarted {
   taskId: string;
   status: string;
-  engine?: CaptionEngineId;
   model?: string;
-  estimate?: CaptionEstimate;
-}
-
-/** The answer to an estimate: no task, nothing copied, nothing charged. */
-export interface TranscriptionEstimate {
-  estimate: CaptionEstimate;
-  engine?: CaptionEngineId;
 }
 
 /** One recognition task of this film; `progress` and `error` when the plugin includes them. */
 export interface CaptionTaskSummary {
   taskId: string;
   status: TaskSnapshot['status'];
-  engine?: CaptionEngineId;
   model?: string;
   startedAt: number;
   endedAt?: number | null;
@@ -400,13 +381,12 @@ export interface CaptionDraftSegment {
   sourceOut: number;
 }
 
-/** An unreviewed recognition draft (Studio's `TimelineCaptionDraft`, plus the engine). */
+/** An unreviewed recognition draft (Studio's `TimelineCaptionDraft`). */
 export interface CaptionDraft {
   kind: 'timeline-caption-draft';
   schemaVersion: 1;
   baseRevision: number;
   model: string;
-  engine?: CaptionEngineId;
   reviewStatus: 'unreviewed';
   ranges: Array<{ start: number; end: number }>;
   sources: Array<{ clipId: string; track?: string; file: string; start: number; end: number; sourceIn: number; sourceOut: number }>;
@@ -419,10 +399,6 @@ export const getCaptionEngines = (): Promise<CaptionEngines> =>
 /** Start recognizing the saved cut's original audio in the background. */
 export const startTranscription = (body: TranscribeBody): Promise<TranscriptionStarted> =>
   studio(`/api/canvas/timelines/${board}/transcribe${projectQuery}`, '提交字幕识别', { method: 'POST', json: body });
-
-/** What that recognition would send and cost: planned and checked like one, but no task is created and nothing is charged. */
-export const estimateTranscription = (body: TranscribeBody): Promise<TranscriptionEstimate> =>
-  studio(`/api/canvas/timelines/${board}/transcribe${projectQuery}`, '估算转写费用', { method: 'POST', json: { ...body, estimateOnly: true } });
 
 export const listCaptionTasks = (signal?: AbortSignal): Promise<{ tasks: CaptionTaskSummary[] }> =>
   studio(`/api/canvas/timelines/${board}/captions/tasks${projectQuery}`, '读取字幕识别任务', signal ? { signal } : {});

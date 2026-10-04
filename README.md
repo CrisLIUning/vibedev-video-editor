@@ -27,7 +27,7 @@ npm run typecheck
 
 dsh-film 的 `node scripts/build-apps.mjs editor` 会调用 `build:dsh`，把 `dist-dsh/` 放进插件的 `apps/editor/`，并把桥接合约（时间线命令引擎）拷成插件的 `vendor/video-editor-bridge.mjs`。
 
-`dist-dsh/` 里有两张页面：宿主页（`index.html` + `host.js`）和字幕识别页（`caption-runner.html` + `caption-runner.js`）。识别页由 dsh-film 在 DSH 窗口里隐藏打开，一次跑一个识别任务：领取任务，用同一个编辑器包里的 `transcribeTimelineSources`（本机 Whisper）或 `extractTimelineAudio`（给网关转写切人声段）处理，回报进度和结果（`dsh/src/caption-runner.ts`）。宿主页的 CC 按钮只提交后台识别：选识别方式（本机免费；网关按分钟计费、只支持普通话、音频会上传），草稿在右下角的面板里打开校对，逐句试听原声、可排除，先试写再写入（`dsh/src/captions.ts`）。导出面板的「渲染到项目」由 dsh-film 用本机 ffmpeg 渲染，没有 ffmpeg 时先问再下载（`dsh/src/session.ts`）。
+`dist-dsh/` 里有两张页面：宿主页（`index.html` + `host.js`）和字幕识别页（`caption-runner.html` + `caption-runner.js`）。识别页由 dsh-film 在 DSH 窗口里隐藏打开，一次跑一个识别任务：领取任务，用同一个编辑器包里的 `transcribeTimelineSources` 在本机跑 Whisper（small q8，Silero 检测人声），回报进度和结果（`dsh/src/caption-runner.ts`）。字幕只用本机 Whisper 识别，音频不离开本机。宿主页的 CC 按钮只提交后台识别：还没同意下载的识别模型先问，保存好再提交，草稿在右下角的面板里打开校对，逐句试听原声、可排除，先试写再写入（`dsh/src/captions.ts`）。导出面板的「渲染到项目」由 dsh-film 用本机 ffmpeg 渲染，没有 ffmpeg 时先问再下载（`dsh/src/session.ts`）。
 
 ## 和上游的区别 · Differences from upstream
 

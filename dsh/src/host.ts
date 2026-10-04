@@ -5,8 +5,8 @@
  * beside it) on the workspace's cut.
  *
  * Two of the editor's buttons hand work to the plugin instead of the tab:
- * CC submits a background recognition (`captions.ts`, run by the hidden
- * `caption-runner.html` or the gateway), and 渲染到项目 has the plugin render
+ * CC submits a background recognition (`captions.ts`, run by Whisper in the
+ * hidden `caption-runner.html`), and 渲染到项目 has the plugin render
  * the cut with ffmpeg (`session.ts`). Both outlive this page.
  */
 

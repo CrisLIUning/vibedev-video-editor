@@ -60,24 +60,16 @@ const REFUSALS: Readonly<Record<string, string>> = {
   CAPTION_SOURCE_INVALID: '原声文件读不了（不是文件，或超过 1 GB）',
   CAPTION_SOURCE_UNAVAILABLE: '识别页面读不到原声文件',
   CAPTION_PROTECTED_RANGE: '这个范围里已有校对过或手改过的字幕，草稿没有能写入的句子；要重写请先删掉旧字幕',
-  CAPTION_RUNTIME_UNAVAILABLE: '本机识别需要一个打开着的 VibeDev 窗口（识别在窗口里的隐藏页面运行）；也可以改用网关转写',
+  CAPTION_RUNTIME_UNAVAILABLE: '本机识别需要一个打开着的 VibeDev 窗口（识别在窗口里的隐藏页面运行）',
   CAPTION_RUNTIME_LOST: '运行识别的窗口关掉了，识别中断，请重新识别',
   CAPTION_RUNTIME_FAILED: '识别页面出错：{detail}',
   CAPTION_RECOGNITION_FAILED: '识别失败：{detail}',
   CAPTION_RECOGNITION_TIMEOUT: '识别超过 45 分钟，已停止，请缩小范围',
   CAPTION_RESULT_INVALID: '识别结果不完整，字幕没有改动',
   CAPTION_MODEL_FAILED: '识别模型没能准备好：{detail}',
-  CAPTION_ENGINE_UNAVAILABLE: '网关转写现在用不了：{detail}',
-  CAPTION_ENGINE_LANGUAGE_UNSUPPORTED: '网关转写只支持普通话',
-  CAPTION_TIMESTAMPS_UNAVAILABLE: '网关只返回了文字、没有时间：请保持 VibeDev 窗口打开再试，或改用本机识别',
+  // A request from an older page that still names a recognizer other than Whisper.
+  CAPTION_ENGINE_UNSUPPORTED: '字幕只用本机 Whisper 识别，不再提供别的识别方式',
   VIDEO_EDITOR_MODEL_CONSENT_REQUIRED: '要先同意下载识别模型',
-  // The gateway, as dsh-media names its refusals.
-  NOT_SIGNED_IN: '请先登录 VibeDev 账号（dsh-media 的设置里）',
-  INSUFFICIENT_BALANCE: 'VibeDev 账户余额不足',
-  SPENDING_DECLINED: '没有确认扣费，转写已取消',
-  AUDIO_TOO_LONG: '这段音频太长，网关一次只转写 10 分钟以内',
-  TRANSCRIPTION_FAILED: '网关转写失败：{detail}',
-  TRANSCRIPTION_TIMEOUT: '网关转写超时：{detail}',
 };
 
 /** `FFMPEG_MISSING_FILTER` about captions, and about any other filter. */
@@ -128,14 +120,6 @@ function featuresOf(message: string): string {
     .join('、');
 }
 
-/** The cause a gateway refusal names (`{ cause }` beside the code), when it names one. */
-function causeOf(error: unknown): string | null {
-  const extra = error && typeof error === 'object' ? (error as { extra?: unknown }).extra : null;
-  const cause = extra && typeof extra === 'object' ? (extra as { cause?: unknown }).cause : null;
-  if (typeof cause === 'string' && cause) return cause;
-  return codeOf(cause);
-}
-
 /** The refusal's wording for the person: by code, specifics kept. */
 export function describeRefusal(error: unknown): string {
   const message = messageOf(error);
@@ -143,10 +127,6 @@ export function describeRefusal(error: unknown): string {
   if (code === null) return message;
   if (code === 'FFMPEG_MISSING_FILTER') {
     return /subtitles|libass/i.test(message) ? NO_SUBTITLES : MISSING_FILTER.replace('{detail}', detailOf(message));
-  }
-  if (code === 'CAPTION_ENGINE_UNAVAILABLE') {
-    const cause = causeOf(error);
-    if (cause !== null && REFUSALS[cause] !== undefined) return REFUSALS[cause]!.replace('{detail}', detailOf(message));
   }
   const wording = REFUSALS[code];
   if (wording === undefined) return message;

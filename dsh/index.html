@@ -128,45 +128,6 @@
         outline: 2px solid var(--vibedev-editor-accent, #d77757);
         outline-offset: 2px;
       }
-      .caption-engines {
-        display: grid;
-        gap: 8px;
-        margin: 0 0 12px;
-      }
-      .caption-engine {
-        display: flex;
-        gap: 8px;
-        align-items: flex-start;
-        padding: 8px 10px;
-        border: 1px solid var(--vibedev-editor-border, #e4e1db);
-        border-radius: 8px;
-        cursor: pointer;
-      }
-      .caption-engine:has(input:checked) {
-        border-color: var(--vibedev-editor-accent, #d77757);
-      }
-      .caption-engine:has(input:disabled) {
-        cursor: default;
-        opacity: 0.6;
-      }
-      .caption-engine input {
-        margin: 3px 0 0;
-        accent-color: var(--vibedev-editor-accent, #d77757);
-      }
-      .caption-cost {
-        margin: 0 0 12px;
-        padding: 8px 10px;
-        border-radius: 8px;
-        background: var(--vibedev-editor-surface, #f3f1ed);
-        font-size: 12px;
-      }
-      .caption-cost p {
-        margin: 0;
-      }
-      .caption-cost p + p {
-        margin-top: 4px;
-        color: var(--vibedev-editor-text-muted, #74716b);
-      }
       .caption-alert {
         margin: 0 0 8px;
         color: var(--vibedev-editor-danger, #dc2626);
@@ -222,14 +183,13 @@
         padding: 6px 0;
         border-top: 1px solid var(--vibedev-editor-border, #e4e1db);
       }
-      .caption-task time,
-      .caption-task-engine {
+      .caption-task time {
         font-size: 12px;
         color: var(--vibedev-editor-text-muted, #74716b);
       }
       .caption-task button {
         grid-column: 2;
-        grid-row: 1 / span 3;
+        grid-row: 1 / span 2;
       }
       .caption-review-card {
         width: min(560px, 100%);
