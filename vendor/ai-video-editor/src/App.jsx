@@ -1837,6 +1837,7 @@ export function App({ hostLibraryWorkspace = null, hostBridge = null, hostLangua
           seekTo={seekTo}
           sourceAudioBlob={sourceAudioBlob}
           sourceAudioLinked={sourceAudioLinked}
+          timelineCaptions={Boolean(hostBridge?.capabilityRuntime?.transcribeTimeline)}
           generateCaptionsFromSourceAudio={generateCaptionsFromSourceAudio}
           isGeneratingCaptions={status === "captioning"}
           automaticCaptionProgress={status === "captioning" ? progress : 0}

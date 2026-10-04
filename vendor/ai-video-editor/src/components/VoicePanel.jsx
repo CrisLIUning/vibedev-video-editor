@@ -557,6 +557,7 @@ function CaptionContextPanel({
   deleteCaptionSegment,
   seekTo,
   sourceAudioBlob,
+  timelineCaptions = false,
   generateCaptionsFromSourceAudio,
   isGeneratingCaptions,
   automaticCaptionProgress,
@@ -696,13 +697,13 @@ function CaptionContextPanel({
         <button
           className="audio-entry-card caption-entry-card"
           type="button"
-          disabled={!sourceAudioBlob || isGeneratingCaptions}
+          disabled={(!sourceAudioBlob && !timelineCaptions) || isGeneratingCaptions}
           onClick={generateCaptionsFromSourceAudio}
         >
           <ClosedCaptioning size={24} weight="duotone" />
           <span>
             <strong>{isGeneratingCaptions ? t("autoCaptionsRunning") : t("autoCaptionsTitle")}</strong>
-            <em>{sourceAudioBlob ? t("autoCaptionsDesc") : t("autoCaptionsNeedsSource")}</em>
+            <em>{sourceAudioBlob ? t("autoCaptionsDesc") : timelineCaptions ? t("autoCaptionsTimelineDesc") : t("autoCaptionsNeedsSource")}</em>
           </span>
           {isGeneratingCaptions ? (
             <span className="inline-progress" aria-hidden="true">
@@ -1361,6 +1362,7 @@ export function VoicePanel({
   seekTo,
   sourceAudioBlob,
   sourceAudioLinked,
+  timelineCaptions = false,
   generateCaptionsFromSourceAudio,
   isGeneratingCaptions,
   automaticCaptionProgress,
@@ -1736,6 +1738,7 @@ export function VoicePanel({
             audioSegments={audioSegments}
             seekTo={seekTo}
             sourceAudioBlob={sourceAudioBlob}
+            timelineCaptions={timelineCaptions}
             generateCaptionsFromSourceAudio={generateCaptionsFromSourceAudio}
             isGeneratingCaptions={isGeneratingCaptions}
             automaticCaptionProgress={automaticCaptionProgress}
